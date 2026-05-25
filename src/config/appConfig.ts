@@ -31,6 +31,7 @@ export type AppConfig = {
 }
 
 const zeroAddress = '0x0000000000000000000000000000000000000000' as Address
+export const hostrDevelopmentRelay = 'wss://relay.hostr.development'
 
 function env(name: string): string | undefined {
   const value = import.meta.env[name] as string | undefined
@@ -42,10 +43,7 @@ function envAddress(name: string, fallback = zeroAddress): Address {
 }
 
 function parseRelays(): string[] {
-  return (env('VITE_RELAYS') ?? 'wss://relay.damus.io,wss://relay.primal.net,wss://nos.lol')
-    .split(',')
-    .map(relay => relay.trim())
-    .filter(Boolean)
+  return [hostrDevelopmentRelay]
 }
 
 function parseTokens(): AppTokenConfig[] {

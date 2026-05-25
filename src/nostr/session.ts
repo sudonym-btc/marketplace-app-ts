@@ -63,7 +63,7 @@ export function createNostrConnectRequest(relays: string[]): NostrConnectRequest
 
 export async function loginWithNostrConnect(uri: string, relays: string[]): Promise<AppSession> {
   const pool = new SimplePool()
-  const signer = await BunkerSigner.fromURI(getOrCreateClientSecretKey(), uri, { pool })
+  const signer = await BunkerSigner.fromURI(getOrCreateClientSecretKey(), uri, { pool, skipSwitchRelays: true })
   const pubkey = await signer.getPublicKey()
   localStorage.setItem(bunkerStorageKey, toBunkerURL(signer.bp))
   localStorage.setItem(pubkeyStorageKey, pubkey)
@@ -73,11 +73,12 @@ export async function loginWithNostrConnect(uri: string, relays: string[]): Prom
 export async function loginWithBunker(input: string, relays: string[]): Promise<AppSession> {
   const pointer = await parseBunkerInput(input)
   if (!pointer) throw new Error('Invalid bunker URI or NIP-05 address')
+  const scopedPointer = { ...pointer, relays }
   const pool = new SimplePool()
-  const signer = BunkerSigner.fromBunker(getOrCreateClientSecretKey(), pointer, { pool })
+  const signer = BunkerSigner.fromBunker(getOrCreateClientSecretKey(), scopedPointer, { pool })
   await signer.connect()
   const pubkey = await signer.getPublicKey()
-  localStorage.setItem(bunkerStorageKey, toBunkerURL(pointer))
+  localStorage.setItem(bunkerStorageKey, toBunkerURL(scopedPointer))
   localStorage.setItem(pubkeyStorageKey, pubkey)
   return { pubkey, signer, pool, relays }
 }
@@ -87,8 +88,9 @@ export async function restoreBunkerSession(relays: string[]): Promise<AppSession
   if (!stored) return null
   const pointer = await parseBunkerInput(stored)
   if (!pointer) return null
+  const scopedPointer = { ...pointer, relays }
   const pool = new SimplePool()
-  const signer = BunkerSigner.fromBunker(getOrCreateClientSecretKey(), pointer as BunkerPointer, { pool })
+  const signer = BunkerSigner.fromBunker(getOrCreateClientSecretKey(), scopedPointer as BunkerPointer, { pool })
   const pubkey = await signer.getPublicKey()
   localStorage.setItem(pubkeyStorageKey, pubkey)
   return { pubkey, signer, pool, relays }

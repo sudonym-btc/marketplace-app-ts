@@ -9,6 +9,9 @@ Nostr marketplace web app with:
 - Startup EVM driver discovery/sweep hook.
 - Classified listings, listing detail checkout, inbox, orders, and listing editor.
 
+The app is intentionally pinned to `wss://relay.hostr.development` for relay
+traffic. It does not fall back to public relays.
+
 This repo is designed to run as a Hostr dependency beside:
 
 - `../nostr-tools`
