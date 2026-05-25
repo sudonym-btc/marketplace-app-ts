@@ -1,0 +1,63 @@
+import type { ReactNode } from 'react'
+
+import type { AppRoute, AppSession, LoadedMarketplace } from '../types'
+import { routeHref } from '../state/routing'
+
+type ShellProps = {
+  route: AppRoute
+  session?: AppSession
+  marketplace?: LoadedMarketplace
+  status: string
+  loading: boolean
+  error?: string
+  onRefresh(): void
+  children: ReactNode
+}
+
+function navClass(route: AppRoute, name: AppRoute['name']): string {
+  return route.name === name ? 'nav-link active' : 'nav-link'
+}
+
+export function Shell({ route, session, marketplace, status, loading, error, onRefresh, children }: ShellProps) {
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <a className="brand" href="#/">
+          <span className="brand-mark">M</span>
+          <span>Marketplace</span>
+        </a>
+        <nav>
+          <a className={navClass(route, 'listings')} href={routeHref({ name: 'listings' })}>Listings</a>
+          <a className={navClass(route, 'inbox')} href={routeHref({ name: 'inbox' })}>Inbox</a>
+          <a className={navClass(route, 'orders')} href={routeHref({ name: 'orders' })}>Orders</a>
+          <a className={navClass(route, 'edit-listing')} href={routeHref({ name: 'edit-listing' })}>Add listing</a>
+          <a className={navClass(route, 'settings')} href={routeHref({ name: 'settings' })}>Settings</a>
+        </nav>
+        <div className="session-panel">
+          <span className="label">Session</span>
+          <strong>{session ? `${session.pubkey.slice(0, 8)}...${session.pubkey.slice(-6)}` : 'Logged out'}</strong>
+          {marketplace?.evm && (
+            <p>
+              EVM index {marketplace.evm.nextTradeIndex}
+              <br />
+              {marketplace.evm.sweepSummary}
+            </p>
+          )}
+        </div>
+      </aside>
+      <main>
+        <header className="topbar">
+          <div>
+            <span className="label">Status</span>
+            <strong>{loading ? 'Working...' : status}</strong>
+          </div>
+          <button className="button secondary" type="button" onClick={onRefresh} disabled={!session || loading}>
+            Refresh
+          </button>
+        </header>
+        {error && <div className="notice error">{error}</div>}
+        {children}
+      </main>
+    </div>
+  )
+}

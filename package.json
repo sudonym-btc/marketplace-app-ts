@@ -1,0 +1,31 @@
+{
+  "name": "@sudonym-btc/marketplace-app-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nostr marketplace web app with NIP-46 login, listings, orders, inbox, and EVM checkout driver.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "tsc -b"
+  },
+  "dependencies": {
+    "@sudonym-btc/marketplace-evm": "file:../marketplace-evm-ts",
+    "nostr-tools": "file:../nostr-tools",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "viem": "2.44.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.8.2",
+    "vite": "^7.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
