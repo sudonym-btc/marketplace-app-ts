@@ -21,11 +21,14 @@ This repo is designed to run as a Hostr dependency beside:
 
 ```sh
 npm install
-cp .env.example .env.local
 npm run dev
 ```
 
 Open `http://localhost:5178`.
+
+Development mode loads `.env.development`, which mirrors Hostr's Arbitrum
+regtest endpoints and contract addresses. Copy `.env.example` to `.env.local`
+only when overriding those defaults locally.
 
 ## Notes
 
