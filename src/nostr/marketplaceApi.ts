@@ -3,6 +3,7 @@ import * as kinds from 'nostr-tools/kinds'
 import * as marketplace from 'nostr-tools/marketplace'
 
 import type { AppSession, ListingFormValue, NostrPublisher, OrderBucket } from '../types'
+import { publishGiftWrappedRumor } from './privateMessages'
 
 export function listingAnchor(event: Event): string {
   const d = event.tags.find(tag => tag[0] === 'd')?.[1]
@@ -10,42 +11,64 @@ export function listingAnchor(event: Event): string {
 }
 
 export async function fetchListings(session: AppSession): Promise<marketplace.MarketplaceListing[]> {
+  console.debug('[marketplace-app] fetching listings', { relayCount: session.relays.length })
   const events = await session.pool.querySync(
     session.relays,
     marketplace.listings.filters.search({ limit: 80 }),
   )
-  return events.filter(marketplace.listings.validate).map(marketplace.listings.parse)
+  const invalidCount = events.filter(event => !marketplace.listings.validate(event)).length
+  if (invalidCount > 0) {
+    console.warn('[marketplace-app] ignoring invalid listing events', { invalidCount })
+  }
+  const listings = events.filter(marketplace.listings.validate).map(marketplace.listings.parse)
+  console.debug('[marketplace-app] fetched listings', {
+    eventCount: events.length,
+    listingCount: listings.length,
+  })
+  return listings
 }
 
 export async function fetchListingById(session: AppSession, id: string): Promise<marketplace.MarketplaceListing | null> {
+  console.debug('[marketplace-app] fetching listing by id', { id })
   const [event] = await session.pool.querySync(session.relays, { ids: [id], limit: 1 })
-  return event && marketplace.listings.validate(event) ? marketplace.listings.parse(event) : null
+  if (!event) {
+    console.warn('[marketplace-app] listing not found', { id })
+    return null
+  }
+  if (!marketplace.listings.validate(event)) {
+    console.warn('[marketplace-app] fetched listing failed validation', { id, kind: event.kind })
+    return null
+  }
+  console.debug('[marketplace-app] fetched listing by id', { id, kind: event.kind })
+  return marketplace.listings.parse(event)
 }
 
 export async function fetchGiftWraps(session: AppSession): Promise<Event[]> {
-  return session.pool.querySync(session.relays, {
+  console.debug('[marketplace-app] fetching gift wraps', {
+    pubkey: session.pubkey,
+    relayCount: session.relays.length,
+  })
+  const wraps = await session.pool.querySync(session.relays, {
     kinds: [kinds.GiftWrap],
     '#p': [session.pubkey],
     limit: 100,
   })
+  console.debug('[marketplace-app] fetched gift wraps', { wrapCount: wraps.length })
+  return wraps
 }
 
-export async function fetchOrderBuckets(session: AppSession): Promise<OrderBucket> {
-  const authored = await session.pool.querySync(session.relays, {
-    kinds: [kinds.MarketplaceOrder],
-    authors: [session.pubkey],
-    limit: 200,
+export async function fetchOrderBuckets(runtime: ReturnType<typeof marketplace.createMarketplace>): Promise<OrderBucket> {
+  console.debug('[marketplace-app] fetching order buckets')
+  const groups = await runtime.orders.groups.mine()
+  console.debug('[marketplace-app] fetched order buckets', {
+    mineCount: groups.buyer.length,
+    onMyListingsCount: groups.seller.length,
+    escrowCount: groups.escrow.length,
+    allCount: groups.all.length,
   })
-  const addressed = await session.pool.querySync(session.relays, {
-    kinds: [kinds.MarketplaceOrder],
-    '#p': [session.pubkey],
-    limit: 200,
-  })
-  const unique = new Map([...authored, ...addressed].map(event => [event.id, event]))
-  const groups = marketplace.orders.groups.group([...unique.values()])
   return {
-    mine: groups.filter(group => group.orders.some(order => order.event.pubkey === session.pubkey)),
-    onMyListings: groups.filter(group => group.sellerPubkey === session.pubkey),
+    mine: groups.buyer,
+    onMyListings: groups.seller,
   }
 }
 
@@ -73,6 +96,11 @@ export async function publishListing(
   })
   const event = await publisher.sign(template)
   await publisher.publish(event)
+  console.debug('[marketplace-app] published listing', {
+    eventId: event.id,
+    kind: event.kind,
+    d: form.d,
+  })
   return event
 }
 
@@ -92,6 +120,12 @@ export async function publishEscrowMethod(
   })
   const event = await publisher.sign(template)
   await publisher.publish(event)
+  console.debug('[marketplace-app] published escrow method', {
+    eventId: event.id,
+    kind: event.kind,
+    paymentFormCount: options.paymentForms.length,
+    hasBytecodeHash: Boolean(options.bytecodeHash),
+  })
   return event
 }
 
@@ -115,7 +149,6 @@ export async function publishReservationOffer(
   const template: EventTemplate = marketplace.orders.template({
     tradeId: options.tradeId,
     listingAnchor: listingAnchor(listing.event),
-    stage: 'negotiate',
     amount: options.amount,
     start: options.start,
     end: options.end,
@@ -123,5 +156,53 @@ export async function publishReservationOffer(
   })
   const event = await publisher.sign(template)
   await publisher.publish(event)
+  console.debug('[marketplace-app] published reservation offer', {
+    eventId: event.id,
+    kind: event.kind,
+    tradeId: options.tradeId,
+    hasEscrow: Boolean(options.escrowPubkey),
+  })
   return event
+}
+
+export async function publishNegotiationOffer(
+  session: AppSession,
+  publisher: NostrPublisher,
+  listing: marketplace.MarketplaceListing,
+  options: {
+    tradeId: string
+    amount: marketplace.MarketplaceAmount
+    start?: string
+    end?: string
+  },
+): Promise<VerifiedEvent[]> {
+  const participants = [
+    { pubkey: session.pubkey, role: 'buyer' },
+    { pubkey: listing.event.pubkey, role: 'seller' },
+  ]
+  const order = await publisher.sign(marketplace.orders.template({
+    tradeId: options.tradeId,
+    listingAnchor: listingAnchor(listing.event),
+    amount: options.amount,
+    start: options.start,
+    end: options.end,
+    participants,
+  }))
+  const message = await publisher.sign(marketplace.structuredMessages.template({
+    childEvent: order,
+    conversation: options.tradeId,
+    recipients: participants,
+    alt: 'Marketplace negotiation offer',
+  }))
+  console.debug('[marketplace-app] publishing negotiation offer gift wrap', {
+    orderId: order.id,
+    messageId: message.id,
+    tradeId: options.tradeId,
+  })
+  const events = await publishGiftWrappedRumor(session, publisher, message, [listing.event.pubkey])
+  console.debug('[marketplace-app] published negotiation offer gift wrap', {
+    tradeId: options.tradeId,
+    eventCount: events.length,
+  })
+  return events
 }

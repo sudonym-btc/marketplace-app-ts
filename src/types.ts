@@ -2,11 +2,12 @@ import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
 import type { BunkerSigner } from 'nostr-tools/nip46'
 import type { SimplePool } from 'nostr-tools/pool'
 import type * as marketplace from 'nostr-tools/marketplace'
+import type { EvmMarketplacePolicyState } from '@sudonym-btc/marketplace-evm'
 
 export type AppRoute =
   | { name: 'listings' }
   | { name: 'listing'; id: string }
-  | { name: 'inbox' }
+  | { name: 'inbox'; thread?: { conversation: string; participants: string[] } }
   | { name: 'orders' }
   | { name: 'edit-listing'; id?: string }
   | { name: 'settings' }
@@ -18,24 +19,22 @@ export type AppSession = {
   relays: string[]
 }
 
+export type SessionRestoreError = {
+  title: string
+  message: string
+  detail?: string
+  timedOut: boolean
+}
+
 export type NostrPublisher = {
   sign(event: EventTemplate): Promise<VerifiedEvent>
-  publish(event: VerifiedEvent): Promise<void>
+  publish(event: Event): Promise<void>
 }
 
 export type LoadedMarketplace = {
-  seed: string
-  runtime: ReturnType<typeof marketplace.createMarketplace>
-  evm?: EvmDriverState
-}
-
-export type EvmDriverState = {
-  enabled: boolean
-  started: boolean
-  maxUsedIndex: number
+  runtime: Awaited<ReturnType<typeof marketplace.init>>
   nextTradeIndex: number
-  sweepSummary: string
-  error?: string
+  evm?: EvmMarketplacePolicyState
 }
 
 export type InboxItem = {

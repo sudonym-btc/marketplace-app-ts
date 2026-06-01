@@ -36,16 +36,20 @@ export function Shell({ route, session, marketplace, status, loading, error, onR
         <div className="session-panel">
           <span className="label">Session</span>
           <strong>{session ? `${session.pubkey.slice(0, 8)}...${session.pubkey.slice(-6)}` : 'Logged out'}</strong>
-          {marketplace?.evm && (
+          {marketplace && (
             <p>
-              EVM index {marketplace.evm.nextTradeIndex}
-              <br />
-              {marketplace.evm.sweepSummary}
+              Next trade index {marketplace.nextTradeIndex}
+              {marketplace.evm?.startSummary ? (
+                <>
+                  <br />
+                  {marketplace.evm.startSummary}
+                </>
+              ) : null}
             </p>
           )}
         </div>
       </aside>
-      <main>
+      <main className={route.name === 'inbox' ? 'inbox-main' : undefined}>
         <header className="topbar">
           <div>
             <span className="label">Status</span>

@@ -1,6 +1,6 @@
-import type { Address } from 'viem'
+type Address = `0x${string}`
 
-export type AppTokenConfig = {
+export type AppAssetConfig = {
   denomination: string
   address: Address
   decimals: number
@@ -20,9 +20,11 @@ export type EvmAppConfig = {
   paymasterAddress?: Address
   multiEscrowAddress: Address
   multiEscrowBytecodeHash?: `0x${string}`
+  multiAuctionAddress?: Address
+  multiAuctionBytecodeHash?: `0x${string}`
   arbiterAddress: Address
   arbiterNostrPubkey?: string
-  tokens: AppTokenConfig[]
+  assets: AppAssetConfig[]
 }
 
 export type AppConfig = {
@@ -46,11 +48,11 @@ function parseRelays(): string[] {
   return [hostrDevelopmentRelay]
 }
 
-function parseTokens(): AppTokenConfig[] {
-  const raw = env('VITE_EVM_TOKENS')
+function parseAssets(): AppAssetConfig[] {
+  const raw = env('VITE_EVM_ASSETS')
   if (!raw) return []
   try {
-    return JSON.parse(raw) as AppTokenConfig[]
+    return JSON.parse(raw) as AppAssetConfig[]
   } catch {
     return []
   }
@@ -75,9 +77,11 @@ export function loadAppConfig(): AppConfig {
       paymasterAddress: env('VITE_EVM_PAYMASTER_ADDRESS') as Address | undefined,
       multiEscrowAddress: envAddress('VITE_EVM_MULTI_ESCROW_ADDRESS'),
       multiEscrowBytecodeHash: env('VITE_EVM_MULTI_ESCROW_BYTECODE_HASH') as `0x${string}` | undefined,
+      multiAuctionAddress: env('VITE_EVM_MULTI_AUCTION_ADDRESS') as Address | undefined,
+      multiAuctionBytecodeHash: env('VITE_EVM_MULTI_AUCTION_BYTECODE_HASH') as `0x${string}` | undefined,
       arbiterAddress: envAddress('VITE_EVM_ARBITER_ADDRESS'),
       arbiterNostrPubkey: env('VITE_EVM_ARBITER_NOSTR_PUBKEY'),
-      tokens: parseTokens(),
+      assets: parseAssets(),
     },
   }
 }

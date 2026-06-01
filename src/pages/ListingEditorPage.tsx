@@ -15,7 +15,7 @@ const initialForm: ListingFormValue = {
   summary: '',
   description: '',
   amount: '100',
-  currency: 'USDT',
+  currency: 'USD',
   frequency: '',
   location: '',
   image: '',

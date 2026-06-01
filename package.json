@@ -11,12 +11,12 @@
     "check": "tsc -b"
   },
   "dependencies": {
+    "@sudonym-btc/marketplace-cashu": "file:../marketplace-cashu-ts",
     "@sudonym-btc/marketplace-evm": "file:../marketplace-evm-ts",
     "nostr-tools": "file:../nostr-tools",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "viem": "2.44.4"
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.1.1",

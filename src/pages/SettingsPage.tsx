@@ -26,7 +26,7 @@ export function SettingsPage({ config, session, marketplace }: Props) {
           <h2>EVM</h2>
           <p>{config.evm.enabled ? `${config.evm.chainName} (${config.evm.chainId})` : 'Disabled'}</p>
           <code>{config.evm.rpcUrl || 'No RPC configured'}</code>
-          <p>{marketplace?.evm?.sweepSummary}</p>
+          <p>{marketplace?.evm?.startSummary}</p>
         </article>
       </div>
     </section>

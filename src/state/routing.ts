@@ -2,9 +2,20 @@ import type { AppRoute } from '../types'
 
 export function routeFromHash(hash = window.location.hash): AppRoute {
   const value = hash.replace(/^#\/?/, '')
-  const [name, id] = value.split('/')
+  const [name, id, extra] = value.split('/')
   if (name === 'listing' && id) return { name: 'listing', id }
-  if (name === 'inbox') return { name: 'inbox' }
+  if (name === 'inbox') {
+    if (id && extra) {
+      return {
+        name: 'inbox',
+        thread: {
+          conversation: decodeURIComponent(id),
+          participants: extra.split(',').map(value => decodeURIComponent(value)).filter(Boolean),
+        },
+      }
+    }
+    return { name: 'inbox' }
+  }
   if (name === 'orders') return { name: 'orders' }
   if (name === 'edit-listing') return { name: 'edit-listing', id }
   if (name === 'settings') return { name: 'settings' }
@@ -16,6 +27,11 @@ export function routeHref(route: AppRoute): string {
     case 'listing':
       return `#/listing/${route.id}`
     case 'inbox':
+      if (route.thread) {
+        return `#/inbox/${encodeURIComponent(route.thread.conversation)}/${route.thread.participants
+          .map(participant => encodeURIComponent(participant))
+          .join(',')}`
+      }
       return '#/inbox'
     case 'orders':
       return '#/orders'

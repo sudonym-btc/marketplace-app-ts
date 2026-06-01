@@ -7,11 +7,12 @@ import type { AppSession } from '../types'
 type Props = {
   relays: string[]
   loading: boolean
+  error?: string
   onLogin(session: AppSession): void
   onError(error: string): void
 }
 
-export function LoginPage({ relays, loading, onLogin, onError }: Props) {
+export function LoginPage({ relays, loading, error, onLogin, onError }: Props) {
   const [bunkerInput, setBunkerInput] = useState('')
   const [connectUri, setConnectUri] = useState('')
   const [waiting, setWaiting] = useState(false)
@@ -63,6 +64,7 @@ export function LoginPage({ relays, loading, onLogin, onError }: Props) {
         <button className="button secondary" type="button" disabled={waiting || loading} onClick={startNostrConnect}>
           Create Nostr Connect QR
         </button>
+        {error && <div className="notice error">{error}</div>}
         {connectUri && (
           <div className="qr-panel">
             <QRCodeSVG value={connectUri} size={180} />
