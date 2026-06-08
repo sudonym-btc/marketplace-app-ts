@@ -1,14 +1,13 @@
 import type { Event } from 'nostr-tools/core'
-import type { BunkerSigner } from 'nostr-tools/nip46'
 import { GiftWrap, Seal } from 'nostr-tools/kinds'
 
-import type { InboxItem } from '../types'
+import type { AppSigner, InboxItem } from '../types'
 
 function parseEventJson(value: string): Event {
   return JSON.parse(value) as Event
 }
 
-export async function unwrapGiftWrapWithSigner(wrap: Event, signer: BunkerSigner): Promise<InboxItem> {
+export async function unwrapGiftWrapWithSigner(wrap: Event, signer: AppSigner): Promise<InboxItem> {
   if (wrap.kind !== GiftWrap) {
     console.warn('[marketplace-app] attempted to unwrap non-gift-wrap event', {
       eventId: wrap.id,

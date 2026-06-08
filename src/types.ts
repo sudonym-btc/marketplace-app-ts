@@ -1,11 +1,13 @@
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
-import type { BunkerSigner } from 'nostr-tools/nip46'
 import type { SimplePool } from 'nostr-tools/pool'
 import type * as marketplace from 'nostr-tools/marketplace'
 import type { EvmMarketplacePolicyState } from '@sudonym-btc/marketplace-evm'
 
 export type AppRoute =
   | { name: 'listings' }
+  | { name: 'auctions' }
+  | { name: 'my-listings' }
+  | { name: 'login' }
   | { name: 'listing'; id: string }
   | { name: 'inbox'; thread?: { conversation: string; participants: string[] } }
   | { name: 'orders' }
@@ -14,9 +16,17 @@ export type AppRoute =
 
 export type AppSession = {
   pubkey: string
-  signer: BunkerSigner
+  signer: AppSigner
   pool: SimplePool
   relays: string[]
+}
+
+export type AppSigner = {
+  getPublicKey(): Promise<string>
+  nip44Encrypt(pubkey: string, plaintext: string): Promise<string>
+  nip44Decrypt(pubkey: string, ciphertext: string): Promise<string>
+  signEvent(event: EventTemplate): Promise<VerifiedEvent>
+  close?(): Promise<void>
 }
 
 export type SessionRestoreError = {
@@ -32,7 +42,7 @@ export type NostrPublisher = {
 }
 
 export type LoadedMarketplace = {
-  runtime: Awaited<ReturnType<typeof marketplace.init>>
+  runtime: Awaited<ReturnType<typeof marketplace.session>>
   nextTradeIndex: number
   evm?: EvmMarketplacePolicyState
 }

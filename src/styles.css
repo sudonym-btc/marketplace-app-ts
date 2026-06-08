@@ -89,6 +89,11 @@ nav {
   color: #c9d3df;
 }
 
+.session-logout-button {
+  width: 100%;
+  margin-top: 12px;
+}
+
 main {
   min-width: 0;
 }
@@ -311,6 +316,18 @@ select:disabled {
   color: #7b8794;
 }
 
+.demo-account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.demo-account-grid .button {
+  min-height: 40px;
+  padding-inline: 10px;
+  white-space: normal;
+}
+
 .qr-panel {
   display: grid;
   justify-items: center;
@@ -442,6 +459,11 @@ select:disabled {
   color: #5f6b7a;
 }
 
+.muted {
+  margin-bottom: 0;
+  color: #667085;
+}
+
 .checkout-panel {
   position: sticky;
   top: 92px;
@@ -482,6 +504,172 @@ select:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 10px;
+}
+
+.section-heading,
+.auction-card-heading,
+.auction-actions,
+.bid-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+}
+
+.section-heading {
+  margin: 28px 0 14px;
+}
+
+.section-heading h2 {
+  margin-bottom: 0;
+}
+
+.auction-section {
+  display: grid;
+  gap: 12px;
+}
+
+.auction-list {
+  display: grid;
+  gap: 12px;
+}
+
+.auction-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #dde4ee;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.auction-card-link {
+  color: inherit;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.auction-card-link:hover {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.auction-card-heading strong,
+.auction-card-heading span {
+  display: block;
+}
+
+.auction-card-heading > div {
+  min-width: 0;
+}
+
+.auction-card-heading > div > span {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.auction-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.auction-facts dt {
+  margin-bottom: 3px;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.auction-facts dd {
+  margin: 0;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.auction-actions {
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: #344054;
+  background: #eef2f6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pagination-controls {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.pagination-controls span {
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bid-list {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #eef2f6;
+}
+
+.auction-close-summary {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  color: #064e3b;
+  background: #f0fdf4;
+  font-size: 13px;
+}
+
+.auction-close-summary span {
+  color: #166534;
+  overflow-wrap: anywhere;
+}
+
+.bid-row {
+  padding: 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.bid-row.winning-bid {
+  border: 1px solid #86efac;
+  background: #f0fdf4;
+}
+
+.bid-row div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bid-row strong,
+.bid-row span {
+  overflow-wrap: anywhere;
+}
+
+.bid-row div > span {
+  color: #667085;
+  font-size: 12px;
 }
 
 .modal-backdrop {
@@ -546,6 +734,51 @@ select:disabled {
   color: #4b5565;
   font-size: 13px;
   text-align: right;
+}
+
+.payment-status-modal {
+  width: min(680px, 100%);
+}
+
+.modal-status {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.modal-status strong {
+  color: #1f2937;
+}
+
+.modal-status p {
+  margin-bottom: 0;
+  color: #4b5565;
+}
+
+.modal-status.working {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.modal-status.success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.modal-status.success strong {
+  color: #166534;
+}
+
+.modal-status.error {
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+
+.modal-status.error strong {
+  color: #9f1239;
 }
 
 .modal-error {
@@ -1016,6 +1249,10 @@ code {
   .inbox-layout,
   .settings-grid,
   .two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .demo-account-grid {
     grid-template-columns: 1fr;
   }
 

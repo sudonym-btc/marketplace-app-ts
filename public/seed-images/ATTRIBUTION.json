@@ -1,0 +1,61 @@
+{
+  "notes": "Downloaded local development fixture photos for NMDK marketplace seed listings.",
+  "images": [
+    {
+      "file": "nmdk-used-camera-kit.jpg",
+      "sourceTitle": "File:Sony Alpha 7R IV body with Sony Zeiss 55mm lens.jpg",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Sony_Alpha_7R_IV_body_with_Sony_Zeiss_55mm_lens.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Franz van Duns"
+    },
+    {
+      "file": "nmdk-workshop-bench.jpg",
+      "sourceTitle": "File:Cluttered workbench in a rustic workshop filled with tools and materials.jpg",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Cluttered_workbench_in_a_rustic_workshop_filled_with_tools_and_materials.jpg",
+      "license": "CC BY 2.0",
+      "artist": "Shixart1985"
+    },
+    {
+      "file": "nmdk-toyota-hilux.jpg",
+      "sourceTitle": "File:2005-2007 Toyota Hilux (KUN26R) SR5 4-door utility 02.jpg",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:2005-2007_Toyota_Hilux_(KUN26R)_SR5_4-door_utility_02.jpg",
+      "license": "Public domain",
+      "artist": "OSX"
+    },
+    {
+      "file": "nmdk-evm-loft.jpg",
+      "sourceTitle": "File:Kurtulus Loft Interior View.jpg",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Kurtulus_Loft_Interior_View.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Ldrey"
+    },
+    {
+      "file": "nmdk-espresso-machine.jpg",
+      "sourceTitle": "File:Marengo Espresso Machine, Cafe de l'Opera.jpg",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Marengo_Espresso_Machine,_Cafe_de_l%27Opera.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Visitor7"
+    },
+    {
+      "file": "nmdk-cargo-bike.png",
+      "sourceTitle": "File:Family Cargo Electric Bike.png",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Family_Cargo_Electric_Bike.png",
+      "license": "CC0",
+      "artist": "Addmotor Electric Bikes"
+    },
+    {
+      "file": "nmdk-dual-villa.jpg",
+      "sourceTitle": "A large white villa on a hillside with palm trees.",
+      "sourceUrl": "https://unsplash.com/photos/a-large-white-villa-on-a-hillside-with-palm-trees-m1O_QXxpyoE",
+      "license": "Unsplash License",
+      "artist": "Jeffrey Eisen"
+    },
+    {
+      "file": "nmdk-land-cruiser.jpg",
+      "sourceTitle": "Front View of a Bj40 Land Cruiser",
+      "sourceUrl": "https://www.pexels.com/photo/front-view-of-a-bj40-land-cruiser-12565918/",
+      "license": "Pexels License",
+      "artist": "Jacob Moore"
+    }
+  ]
+}

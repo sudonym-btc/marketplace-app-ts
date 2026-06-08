@@ -1,5 +1,7 @@
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { decode } from 'nostr-tools/nip19'
+import { decrypt, encrypt, getConversationKey } from 'nostr-tools/nip44'
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { SimplePool } from 'nostr-tools/pool'
 import {
   BunkerSigner,
@@ -9,7 +11,7 @@ import {
   type BunkerPointer,
 } from 'nostr-tools/nip46'
 
-import type { AppSession, NostrPublisher } from '../types'
+import type { AppSession, AppSigner, NostrPublisher } from '../types'
 import { bytesToHex, hexToBytes, randomHex } from '../utils/hex'
 
 const clientKeyStorageKey = 'marketplace-app:nip46-client-key'
@@ -19,6 +21,26 @@ const bunkerRequestTimeoutMs = 15_000
 
 type PoolWithAutomaticAuth = SimplePool & {
   automaticallyAuth?: (relayURL: string) => null | ((event: EventTemplate) => Promise<VerifiedEvent>)
+}
+
+class LocalNsecSigner implements AppSigner {
+  constructor(private readonly secretKey: Uint8Array) {}
+
+  async getPublicKey(): Promise<string> {
+    return getPublicKey(this.secretKey)
+  }
+
+  async nip44Encrypt(pubkey: string, plaintext: string): Promise<string> {
+    return encrypt(plaintext, getConversationKey(this.secretKey, pubkey))
+  }
+
+  async nip44Decrypt(pubkey: string, ciphertext: string): Promise<string> {
+    return decrypt(ciphertext, getConversationKey(this.secretKey, pubkey))
+  }
+
+  async signEvent(event: EventTemplate): Promise<VerifiedEvent> {
+    return finalizeEvent(event, this.secretKey)
+  }
 }
 
 export type NostrConnectRequest = {
@@ -94,7 +116,7 @@ export function isBunkerSessionTimeout(err: unknown): err is BunkerSessionTimeou
   return err instanceof BunkerSessionTimeoutError
 }
 
-function enableNip42Auth(pool: SimplePool, signer: BunkerSigner): void {
+function enableNip42Auth(pool: SimplePool, signer: AppSigner): void {
   ;(pool as PoolWithAutomaticAuth).automaticallyAuth = () => event => signer.signEvent(event)
 }
 
@@ -114,7 +136,7 @@ function failedPublishReason(result: PromiseSettledResult<string>): string | und
   return undefined
 }
 
-async function connectAndAuthenticateRelays(pool: SimplePool, relays: string[], signer: BunkerSigner): Promise<void> {
+async function connectAndAuthenticateRelays(pool: SimplePool, relays: string[], signer: AppSigner): Promise<void> {
   enableNip42Auth(pool, signer)
   console.debug('[marketplace-app] connecting relays with NIP-42 auth enabled', {
     relayCount: relays.length,
@@ -146,6 +168,25 @@ async function connectAndAuthenticateRelays(pool: SimplePool, relays: string[], 
     relayCount: relays.length,
     failureCount: hardFailures.length,
   })
+}
+
+export async function loginWithNsec(nsec: string, relays: string[]): Promise<AppSession> {
+  console.debug('[marketplace-app] logging in with local nsec', { relayCount: relays.length })
+  const decoded = decode(nsec.trim())
+  if (decoded.type !== 'nsec') throw new Error('Demo login requires an nsec key')
+  const pool = new SimplePool()
+  const signer = new LocalNsecSigner(decoded.data)
+  try {
+    const pubkey = await signer.getPublicKey()
+    await withBunkerTimeout(connectAndAuthenticateRelays(pool, relays, signer), 'Local signer relay authentication')
+    localStorage.removeItem(bunkerStorageKey)
+    localStorage.setItem(pubkeyStorageKey, pubkey)
+    console.debug('[marketplace-app] local nsec login complete', { pubkey, relayCount: relays.length })
+    return { pubkey, signer, pool, relays }
+  } catch (err) {
+    pool.close(relays)
+    throw err
+  }
 }
 
 export async function loginWithNostrConnect(uri: string, relays: string[]): Promise<AppSession> {

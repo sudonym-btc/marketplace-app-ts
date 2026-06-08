@@ -1,18 +1,22 @@
 import { useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 
-import { createNostrConnectRequest, loginWithBunker, loginWithNostrConnect } from '../nostr/session'
+import type { DemoAccountConfig } from '../config/appConfig'
+import { createNostrConnectRequest, loginWithBunker, loginWithNsec, loginWithNostrConnect } from '../nostr/session'
 import type { AppSession } from '../types'
 
 type Props = {
   relays: string[]
+  nip46Relays: string[]
+  signetUrl?: string
+  demoAccounts: DemoAccountConfig[]
   loading: boolean
   error?: string
   onLogin(session: AppSession): void
   onError(error: string): void
 }
 
-export function LoginPage({ relays, loading, error, onLogin, onError }: Props) {
+export function LoginPage({ relays, nip46Relays, signetUrl, demoAccounts, loading, error, onLogin, onError }: Props) {
   const [bunkerInput, setBunkerInput] = useState('')
   const [connectUri, setConnectUri] = useState('')
   const [waiting, setWaiting] = useState(false)
@@ -29,13 +33,24 @@ export function LoginPage({ relays, loading, error, onLogin, onError }: Props) {
   }
 
   async function startNostrConnect() {
-    const request = createNostrConnectRequest(relays)
+    const request = createNostrConnectRequest(nip46Relays)
     setConnectUri(request.uri)
     setWaiting(true)
     try {
       onLogin(await loginWithNostrConnect(request.uri, relays))
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Nostr Connect login failed')
+    } finally {
+      setWaiting(false)
+    }
+  }
+
+  async function demoLogin(account: DemoAccountConfig) {
+    try {
+      setWaiting(true)
+      onLogin(await loginWithNsec(account.nsec, relays))
+    } catch (err) {
+      onError(err instanceof Error ? err.message : `Demo login failed for ${account.label}`)
     } finally {
       setWaiting(false)
     }
@@ -64,10 +79,33 @@ export function LoginPage({ relays, loading, error, onLogin, onError }: Props) {
         <button className="button secondary" type="button" disabled={waiting || loading} onClick={startNostrConnect}>
           Create Nostr Connect QR
         </button>
+        {demoAccounts.length > 0 && (
+          <>
+            <div className="divider">or</div>
+            <div className="demo-account-grid">
+              {demoAccounts.map(account => (
+                <button
+                  className="button secondary"
+                  key={account.id}
+                  type="button"
+                  disabled={waiting || loading}
+                  onClick={() => void demoLogin(account)}
+                >
+                  Login as {account.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         {error && <div className="notice error">{error}</div>}
         {connectUri && (
           <div className="qr-panel">
             <QRCodeSVG value={connectUri} size={180} />
+            {signetUrl && (
+              <a className="button secondary" href={signetUrl} target="_blank" rel="noreferrer">
+                Open Signet
+              </a>
+            )}
             <textarea readOnly value={connectUri} />
           </div>
         )}

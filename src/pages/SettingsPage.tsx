@@ -23,6 +23,11 @@ export function SettingsPage({ config, session, marketplace }: Props) {
           <code>{config.relays.join('\n')}</code>
         </article>
         <article>
+          <h2>NIP-46</h2>
+          <p>{config.signetUrl ?? 'No local Signet URL configured'}</p>
+          <code>{config.nip46Relays.join('\n')}</code>
+        </article>
+        <article>
           <h2>EVM</h2>
           <p>{config.evm.enabled ? `${config.evm.chainName} (${config.evm.chainId})` : 'Disabled'}</p>
           <code>{config.evm.rpcUrl || 'No RPC configured'}</code>

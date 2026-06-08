@@ -11,6 +11,7 @@ type ShellProps = {
   loading: boolean
   error?: string
   onRefresh(): void
+  onLogout(): void
   children: ReactNode
 }
 
@@ -18,7 +19,7 @@ function navClass(route: AppRoute, name: AppRoute['name']): string {
   return route.name === name ? 'nav-link active' : 'nav-link'
 }
 
-export function Shell({ route, session, marketplace, status, loading, error, onRefresh, children }: ShellProps) {
+export function Shell({ route, session, marketplace, status, loading, error, onRefresh, onLogout, children }: ShellProps) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -28,10 +29,18 @@ export function Shell({ route, session, marketplace, status, loading, error, onR
         </a>
         <nav>
           <a className={navClass(route, 'listings')} href={routeHref({ name: 'listings' })}>Listings</a>
-          <a className={navClass(route, 'inbox')} href={routeHref({ name: 'inbox' })}>Inbox</a>
-          <a className={navClass(route, 'orders')} href={routeHref({ name: 'orders' })}>Orders</a>
-          <a className={navClass(route, 'edit-listing')} href={routeHref({ name: 'edit-listing' })}>Add listing</a>
-          <a className={navClass(route, 'settings')} href={routeHref({ name: 'settings' })}>Settings</a>
+          <a className={navClass(route, 'auctions')} href={routeHref({ name: 'auctions' })}>Auctions</a>
+          <a className={navClass(route, 'my-listings')} href={routeHref({ name: 'my-listings' })}>My Listings</a>
+          {session ? (
+            <>
+              <a className={navClass(route, 'inbox')} href={routeHref({ name: 'inbox' })}>Inbox</a>
+              <a className={navClass(route, 'orders')} href={routeHref({ name: 'orders' })}>Orders</a>
+              <a className={navClass(route, 'edit-listing')} href={routeHref({ name: 'edit-listing' })}>Add listing</a>
+              <a className={navClass(route, 'settings')} href={routeHref({ name: 'settings' })}>Settings</a>
+            </>
+          ) : (
+            <a className={navClass(route, 'login')} href={routeHref({ name: 'login' })}>Sign in</a>
+          )}
         </nav>
         <div className="session-panel">
           <span className="label">Session</span>
@@ -47,6 +56,11 @@ export function Shell({ route, session, marketplace, status, loading, error, onR
               ) : null}
             </p>
           )}
+          {session && (
+            <button className="button secondary session-logout-button" type="button" onClick={onLogout}>
+              Log out
+            </button>
+          )}
         </div>
       </aside>
       <main className={route.name === 'inbox' ? 'inbox-main' : undefined}>
@@ -55,7 +69,7 @@ export function Shell({ route, session, marketplace, status, loading, error, onR
             <span className="label">Status</span>
             <strong>{loading ? 'Working...' : status}</strong>
           </div>
-          <button className="button secondary" type="button" onClick={onRefresh} disabled={!session || loading}>
+          <button className="button secondary" type="button" onClick={onRefresh} disabled={loading}>
             Refresh
           </button>
         </header>

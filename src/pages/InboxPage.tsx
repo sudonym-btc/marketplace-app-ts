@@ -51,14 +51,17 @@ function sourceOrderForCancel(group: marketplace.ParsedOrderGroup): marketplace.
   return group.buyerOrder ?? latestOrder(group)
 }
 
-function deriveBuyerSecretForOrderGroup(
+async function deriveBuyerSecretForOrderGroup(
   group: marketplace.ParsedOrderGroup,
   marketplaceState: LoadedMarketplace | undefined,
-): { index: number; secretKey: Uint8Array } | undefined {
+  session: AppSession,
+): Promise<{ index: number; secretKey: Uint8Array } | undefined> {
   const targetPubkey = buyerPubkeyForOrderGroup(group)
   if (!targetPubkey || !marketplaceState) return undefined
+  const seedEvent = marketplaceState.runtime.seed.event ?? (await marketplaceState.runtime.seed.ensureCreated()).event
+  const payload = marketplace.seed.parsePayload(await session.signer.nip44Decrypt(session.pubkey, seedEvent.content))
   for (let index = 0; index < 500; index += 1) {
-    const material = marketplace.seed.deriveTradeMaterial(marketplaceState.runtime.seed, { index, role: 'buyer' })
+    const material = marketplace.seed.deriveTradeMaterial(payload.seed, { index, role: 'buyer' })
     if (material.tradePubkey === targetPubkey) return { index, secretKey: material.tradeSecretKey }
   }
   return undefined
@@ -193,7 +196,7 @@ export function InboxPage({
         reason: 'cancelled',
         participants: group.participants.length > 0 ? group.participants : source.participants,
       })
-      const buyerSecret = deriveBuyerSecretForOrderGroup(group, marketplaceState)
+      const buyerSecret = await deriveBuyerSecretForOrderGroup(group, marketplaceState, session)
       const buyerPubkey = buyerPubkeyForOrderGroup(group)
       const canSignAsPublicParticipant =
         buyerPubkey === session.pubkey ||

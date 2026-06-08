@@ -35,8 +35,6 @@ export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainCon
       },
       multiEscrowAddress: config.evm.multiEscrowAddress,
       ...(config.evm.multiEscrowBytecodeHash ? { multiEscrowBytecodeHash: config.evm.multiEscrowBytecodeHash } : {}),
-      ...(config.evm.multiAuctionAddress ? { multiAuctionAddress: config.evm.multiAuctionAddress } : {}),
-      ...(config.evm.multiAuctionBytecodeHash ? { multiAuctionBytecodeHash: config.evm.multiAuctionBytecodeHash } : {}),
     },
   ]
 }

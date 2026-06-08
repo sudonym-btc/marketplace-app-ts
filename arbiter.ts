@@ -4,12 +4,22 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createCashuEscrowPolicy, MemoryCashuEscrowStore } from '@sudonym-btc/marketplace-cashu'
+import {
+  createCashuAuctionPolicy,
+  createCashuEscrowPolicy,
+  type CashuEscrowOperation,
+  type CashuEscrowOperationQuery,
+  type CashuEscrowOperationStatus,
+  type CashuEscrowStorage,
+} from '@sudonym-btc/marketplace-cashu'
 import {
   createEvmAuctionPolicy,
   createEvmEscrowPolicy,
-  MemoryOperationStore,
   type EvmMarketplaceChainConfig,
+  type EvmOperationQuery,
+  type EvmOperationRecord,
+  type EvmOperationStatus,
+  type EvmOperationStore,
 } from '@sudonym-btc/marketplace-evm'
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
 import { EventDeletion } from 'nostr-tools/kinds'
@@ -46,13 +56,82 @@ type PolicyBuildResult = {
 }
 
 const appDir = dirname(fileURLToPath(import.meta.url))
-const hostrDir = resolve(appDir, '../..')
-const defaultRelay = 'wss://relay.hostr.development'
-const defaultName = 'Hostr Marketplace Arbiter'
+const nmdkDir = resolve(appDir, '../..')
+const defaultRelay = 'ws://127.0.0.1:18080'
+const defaultName = 'NMDK Marketplace Arbiter'
 const defaultMaxDuration = 14 * 24 * 60 * 60
 const zeroAddress = '0x0000000000000000000000000000000000000000' as Address
-const devCaBundle = resolve(hostrDir, 'docker/tls/ca/ca-bundle.crt')
-const caReexecFlag = 'HOSTR_ARBITER_CA_REEXEC'
+const devCaBundle = resolve(nmdkDir, 'docker/tls/ca/ca-bundle.crt')
+const caReexecFlag = 'MARKETPLACE_ARBITER_CA_REEXEC'
+
+function evmStatusMatches(record: EvmOperationRecord, status?: EvmOperationStatus | EvmOperationStatus[]): boolean {
+  if (!status) return true
+  return Array.isArray(status) ? status.includes(record.status) : record.status === status
+}
+
+function evmOperationMatches(record: EvmOperationRecord, query: EvmOperationQuery = {}): boolean {
+  return (
+    (!query.kind || record.kind === query.kind) &&
+    evmStatusMatches(record, query.status) &&
+    (!query.chainId || record.chainId === query.chainId) &&
+    (!query.tradeId || record.tradeId === query.tradeId) &&
+    (!query.swapId || record.swapId === query.swapId)
+  )
+}
+
+class ArbiterEvmOperationStore implements EvmOperationStore {
+  private readonly records = new Map<string, EvmOperationRecord>()
+
+  async get(id: string): Promise<EvmOperationRecord | null> {
+    return this.records.get(id) ?? null
+  }
+
+  async put(record: EvmOperationRecord): Promise<void> {
+    this.records.set(record.id, record)
+  }
+
+  async list(query: EvmOperationQuery = {}): Promise<EvmOperationRecord[]> {
+    return [...this.records.values()].filter(record => evmOperationMatches(record, query))
+  }
+
+  async delete(id: string): Promise<void> {
+    this.records.delete(id)
+  }
+}
+
+function cashuStatusMatches(
+  actual: CashuEscrowOperationStatus,
+  expected?: CashuEscrowOperationStatus | CashuEscrowOperationStatus[],
+): boolean {
+  if (!expected) return true
+  return Array.isArray(expected) ? expected.includes(actual) : actual === expected
+}
+
+class ArbiterCashuEscrowStore implements CashuEscrowStorage {
+  private readonly records = new Map<string, CashuEscrowOperation>()
+
+  async get(id: string): Promise<CashuEscrowOperation | null> {
+    return this.records.get(id) ?? null
+  }
+
+  async put(record: CashuEscrowOperation): Promise<void> {
+    this.records.set(record.id, structuredClone(record))
+  }
+
+  async list(query: CashuEscrowOperationQuery = {}): Promise<CashuEscrowOperation[]> {
+    return [...this.records.values()]
+      .filter(record => cashuStatusMatches(record.status, query.status))
+      .filter(record => !query.tradeId || record.tradeId === query.tradeId)
+      .filter(record => !query.settlementId || record.settlementId === query.settlementId)
+      .filter(record => !query.quoteId || record.quoteId === query.quoteId)
+      .filter(record => !query.mintUrl || record.mintUrl === query.mintUrl)
+      .map(record => structuredClone(record))
+  }
+
+  async delete(id: string): Promise<void> {
+    this.records.delete(id)
+  }
+}
 
 if (
   !process.env[caReexecFlag] &&
@@ -78,12 +157,12 @@ if (
 function usage(): string {
   return `
 Usage:
-  ./arbiter.ts --name='Hostr Arbiter' --policy evm-escrow --policy cashu-escrow
+  ./arbiter.ts --name='NMDK Arbiter' --policy evm-escrow --policy cashu-escrow
 
 Options:
   --name <name>              Name shown in the NIP-46 connect request.
   --policy <policy>          Repeatable. Supported now: evm-escrow, evm-auction, cashu-escrow.
-  --relay <relay>            Repeatable. Defaults to wss://relay.hostr.development.
+  --relay <relay>            Repeatable. Defaults to ws://127.0.0.1:18080.
   --connect-timeout-ms <ms>  NIP-46 connect timeout. Defaults to 300000.
   --no-service               Do not publish temporary escrow service events.
   --help                     Print this help.
@@ -166,8 +245,7 @@ function loadEnv(): Record<string, string> {
   for (const path of [
     resolve(appDir, '.env.development'),
     resolve(appDir, '.env.local'),
-    resolve(hostrDir, '.env.local'),
-    resolve(hostrDir, '.env.test'),
+    resolve(nmdkDir, '.nmdk.local.env'),
   ]) {
     try {
       Object.assign(merged, parseDotEnv(readFileSync(path, 'utf8')))
@@ -236,8 +314,6 @@ function appConfigFromEnv(env: Record<string, string>, relays: string[]): AppCon
       paymasterAddress: envOptionalAddress(env, 'VITE_EVM_PAYMASTER_ADDRESS'),
       multiEscrowAddress: envAddress(env, 'VITE_EVM_MULTI_ESCROW_ADDRESS'),
       multiEscrowBytecodeHash: envHex(env, 'VITE_EVM_MULTI_ESCROW_BYTECODE_HASH'),
-      multiAuctionAddress: envOptionalAddress(env, 'VITE_EVM_MULTI_AUCTION_ADDRESS'),
-      multiAuctionBytecodeHash: envHex(env, 'VITE_EVM_MULTI_AUCTION_BYTECODE_HASH'),
       arbiterAddress: envAddress(env, 'VITE_EVM_ARBITER_ADDRESS'),
       arbiterNostrPubkey: envValue(env, 'VITE_EVM_ARBITER_NOSTR_PUBKEY'),
       assets: parseJsonArray(envValue(env, 'VITE_EVM_ASSETS'), []),
@@ -269,7 +345,7 @@ function cashuMintsFromEnv(env: Record<string, string>) {
     envValue(env, 'CASHU_MINT_URL') ??
     envValue(env, 'MARKETPLACE_CASHU_PUBLIC_MINT_URL') ??
     envValue(env, 'VITE_CASHU_MINT_URL') ??
-    'https://mint.hostr.development'
+    'http://127.0.0.1:19338'
   return [{
     mintUrl,
     unit: envValue(env, 'CASHU_MINT_UNIT') ?? 'sat',
@@ -290,26 +366,30 @@ function buildPolicies(config: AppConfig, env: Record<string, string>, requested
       if (evmChains.length === 0) throw new Error('evm-escrow requested but EVM chain config is disabled')
       orderPolicies.push(createEvmEscrowPolicy({
         chains: evmChains,
-        operationStore: new MemoryOperationStore(),
-        appId: 'hostr',
+        operationStore: new ArbiterEvmOperationStore(),
+        appId: 'marketplace',
       }) as marketplace.MarketplaceOrderPolicy)
     } else if (policy === 'evm-auction') {
-      if (!evmChains.some(chain => chain.multiAuctionAddress)) {
-        throw new Error('evm-auction requested but no multiAuctionAddress is configured')
+      if (evmChains.length === 0) {
+        throw new Error('evm-auction requested but EVM chain config is disabled')
       }
       bidPolicies.push(createEvmAuctionPolicy({
         chains: evmChains,
-        operationStore: new MemoryOperationStore(),
-        appId: 'hostr',
+        operationStore: new ArbiterEvmOperationStore(),
+        appId: 'marketplace',
       }) as marketplace.MarketplaceBidPolicy)
     } else if (policy === 'cashu-escrow') {
       orderPolicies.push(createCashuEscrowPolicy({
         mints: cashuMints,
-        storage: new MemoryCashuEscrowStore(),
-        appId: 'hostr',
+        storage: new ArbiterCashuEscrowStore(),
+        appId: 'marketplace',
       }) as marketplace.MarketplaceOrderPolicy)
     } else if (policy === 'cashu-auction') {
-      throw new Error('cashu-auction is not implemented by @sudonym-btc/marketplace-cashu yet')
+      bidPolicies.push(createCashuAuctionPolicy({
+        mints: cashuMints,
+        storage: new ArbiterCashuEscrowStore(),
+        appId: 'marketplace',
+      }) as marketplace.MarketplaceBidPolicy)
     } else {
       throw new Error(`Unknown policy: ${policy}`)
     }
@@ -481,8 +561,8 @@ async function publishServiceEvents(input: {
 
   if (input.build.selected.has('evm-auction')) {
     for (const chain of input.build.evmChains) {
-      if (!chain.multiAuctionAddress || !chain.multiAuctionBytecodeHash) {
-        console.warn('[arbiter] skipping EVM auction service publish without auction contract config', {
+      if (!chain.multiEscrowBytecodeHash) {
+        console.warn('[arbiter] skipping EVM auction service publish without multiEscrowBytecodeHash', {
           chainId: chain.chainId,
         })
         continue
@@ -494,10 +574,10 @@ async function publishServiceEvents(input: {
         maxDuration: defaultMaxDuration,
         fee: { ppm: 0, base: '0', min: '0', max: '0' },
         params: {
-          policyType: 'evm:multi-auction',
+          policyType: 'evm:multi-escrow-auction-v1',
           arbiterAddress: input.config.evm.arbiterAddress,
-          contractAddress: chain.multiAuctionAddress,
-          contractBytecodeHash: chain.multiAuctionBytecodeHash,
+          contractAddress: chain.multiEscrowAddress,
+          contractBytecodeHash: chain.multiEscrowBytecodeHash,
           chainId: chain.chainId,
         },
         createdAt: now,
@@ -517,7 +597,36 @@ async function publishServiceEvents(input: {
           maxDuration: defaultMaxDuration,
           fee: { ppm: 0, base: '0', min: '0', max: '0' },
           params: {
-            policyType: 'cashu:p2pk-escrow-v1',
+            policyType: descriptor.type ?? 'cashu:p2pk-escrow-v1',
+            policyHash: policyHashFor(descriptor),
+            mintUrl,
+            unit,
+            mints: input.build.cashuMints.map(mint => ({
+              mintUrl: mint.mintUrl,
+              unit: mint.unit,
+              denomination: mint.denomination,
+              decimals: mint.decimals,
+            })),
+          },
+          createdAt: now,
+        }))
+      }
+    }
+  }
+
+  if (input.build.selected.has('cashu-auction')) {
+    for (const policy of input.build.bidPolicies.filter(policy => policy.method === 'cashu')) {
+      for (const descriptor of policy.policies()) {
+        const mintUrl = typeof descriptor.data?.mintUrl === 'string' ? descriptor.data.mintUrl : undefined
+        const unit = typeof descriptor.data?.unit === 'string' ? descriptor.data.unit : undefined
+        await signAndPublish(marketplace.escrowServices.template({
+          d: `${baseD}:cashu-auction:${slug(mintUrl ?? descriptor.id ?? 'mint')}`,
+          pubkey: input.pubkey,
+          type: 'CASHU',
+          maxDuration: defaultMaxDuration,
+          fee: { ppm: 0, base: '0', min: '0', max: '0' },
+          params: {
+            policyType: descriptor.type ?? 'cashu:p2pk-auction-v1',
             policyHash: policyHashFor(descriptor),
             mintUrl,
             unit,
@@ -618,17 +727,15 @@ async function main(): Promise<void> {
     await authenticateRelays(pool, relays, signer)
     console.log('[arbiter] signer connected', { pubkey, relays })
 
-    const runtime = await marketplace.init({
-      pool,
-      relays,
-      identity: { pubkey, signer },
+    const runtime = await marketplace.session(pool, relays, signer, {
+      pubkey,
       orderPolicies: build.orderPolicies,
       bidPolicies: build.bidPolicies,
       publish: publishTracked,
     })
     const started = await runtime.start({ unusedWindow: 25 })
     console.log('[arbiter] marketplace runtime started', {
-      seedCreated: runtime.seedCreated,
+      seedCreated: runtime.seed.created,
       maxUsedIndex: started.discovery.maxUsedIndex,
       nextUnusedIndex: started.discovery.nextUnusedIndex,
       policies: started.policies.length,

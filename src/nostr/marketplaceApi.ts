@@ -5,15 +5,23 @@ import * as marketplace from 'nostr-tools/marketplace'
 import type { AppSession, ListingFormValue, NostrPublisher, OrderBucket } from '../types'
 import { publishGiftWrappedRumor } from './privateMessages'
 
+type RelayReader = Pick<AppSession, 'pool' | 'relays'>
+
+export type AuctionListingResolution = {
+  auction: marketplace.ParsedMarketplaceAuction
+  listing: marketplace.MarketplaceListing | null
+  error?: string
+}
+
 export function listingAnchor(event: Event): string {
   const d = event.tags.find(tag => tag[0] === 'd')?.[1]
   return `${event.kind}:${event.pubkey}:${d ?? event.id}`
 }
 
-export async function fetchListings(session: AppSession): Promise<marketplace.MarketplaceListing[]> {
-  console.debug('[marketplace-app] fetching listings', { relayCount: session.relays.length })
-  const events = await session.pool.querySync(
-    session.relays,
+export async function fetchListings(reader: RelayReader): Promise<marketplace.MarketplaceListing[]> {
+  console.debug('[marketplace-app] fetching listings', { relayCount: reader.relays.length })
+  const events = await reader.pool.querySync(
+    reader.relays,
     marketplace.listings.filters.search({ limit: 80 }),
   )
   const invalidCount = events.filter(event => !marketplace.listings.validate(event)).length
@@ -28,9 +36,75 @@ export async function fetchListings(session: AppSession): Promise<marketplace.Ma
   return listings
 }
 
-export async function fetchListingById(session: AppSession, id: string): Promise<marketplace.MarketplaceListing | null> {
+export async function fetchAuctions(
+  runtime: ReturnType<typeof marketplace.bind>,
+): Promise<marketplace.ParsedMarketplaceAuction[]> {
+  console.debug('[marketplace-app] fetching auctions')
+  const auctions = await runtime.auctions.search({ limit: 80 })
+  console.debug('[marketplace-app] fetched auctions', { auctionCount: auctions.length })
+  return auctions
+}
+
+function listingAnchorParts(anchor: string): { kind: number; pubkey: string; d: string } {
+  const [kindValue, pubkey, ...rest] = anchor.split(':')
+  const kind = Number.parseInt(kindValue, 10)
+  if (!Number.isSafeInteger(kind) || !pubkey || rest.length === 0) {
+    throw new Error(`Invalid listing anchor: ${anchor}`)
+  }
+  return { kind, pubkey, d: rest.join(':') }
+}
+
+export async function fetchListingByAnchor(
+  reader: RelayReader,
+  anchor: string,
+): Promise<marketplace.MarketplaceListing | null> {
+  const { kind, pubkey, d } = listingAnchorParts(anchor)
+  console.debug('[marketplace-app] fetching listing by anchor', { anchor })
+  const events = await reader.pool.querySync(reader.relays, {
+    kinds: [kind],
+    authors: [pubkey],
+    '#d': [d],
+    limit: 5,
+  })
+  const listings = events
+    .filter(marketplace.listings.validate)
+    .map(marketplace.listings.parse)
+    .sort((a, b) => b.event.created_at - a.event.created_at || b.event.id.localeCompare(a.event.id))
+  if (!listings[0]) {
+    console.warn('[marketplace-app] listing not found for auction anchor', { anchor })
+    return null
+  }
+  return listings[0]
+}
+
+export async function fetchAuctionRows(
+  reader: RelayReader,
+  runtime: ReturnType<typeof marketplace.bind>,
+): Promise<AuctionListingResolution[]> {
+  const auctions = await fetchAuctions(runtime)
+  return Promise.all(auctions.map(async auction => {
+    try {
+      return {
+        auction,
+        listing: await fetchListingByAnchor(reader, auction.listingAnchor),
+      }
+    } catch (err) {
+      console.warn('[marketplace-app] unable to resolve auction listing', {
+        auctionAnchor: auction.auctionAnchor,
+        listingAnchor: auction.listingAnchor,
+      }, err)
+      return {
+        auction,
+        listing: null,
+        error: err instanceof Error ? err.message : 'Unable to resolve auction listing',
+      }
+    }
+  }))
+}
+
+export async function fetchListingById(reader: RelayReader, id: string): Promise<marketplace.MarketplaceListing | null> {
   console.debug('[marketplace-app] fetching listing by id', { id })
-  const [event] = await session.pool.querySync(session.relays, { ids: [id], limit: 1 })
+  const [event] = await reader.pool.querySync(reader.relays, { ids: [id], limit: 1 })
   if (!event) {
     console.warn('[marketplace-app] listing not found', { id })
     return null
@@ -57,7 +131,7 @@ export async function fetchGiftWraps(session: AppSession): Promise<Event[]> {
   return wraps
 }
 
-export async function fetchOrderBuckets(runtime: ReturnType<typeof marketplace.createMarketplace>): Promise<OrderBucket> {
+export async function fetchOrderBuckets(runtime: ReturnType<typeof marketplace.bind>): Promise<OrderBucket> {
   console.debug('[marketplace-app] fetching order buckets')
   const groups = await runtime.orders.groups.mine()
   console.debug('[marketplace-app] fetched order buckets', {
@@ -104,7 +178,7 @@ export async function publishListing(
   return event
 }
 
-export async function publishEscrowMethod(
+export async function publishPaymentMethod(
   session: AppSession,
   publisher: NostrPublisher,
   options: {
@@ -113,14 +187,14 @@ export async function publishEscrowMethod(
     paymentForms: marketplace.AcceptedPaymentForm[]
   },
 ): Promise<VerifiedEvent> {
-  const template = marketplace.escrowMethods.template({
+  const template = marketplace.paymentMethod.template({
     trustedEscrowPubkeys: [options.trustedEscrowPubkey || session.pubkey],
     supportedContractBytecodeHashes: options.bytecodeHash ? [options.bytecodeHash] : [],
     acceptedPaymentForms: options.paymentForms,
   })
   const event = await publisher.sign(template)
   await publisher.publish(event)
-  console.debug('[marketplace-app] published escrow method', {
+  console.debug('[marketplace-app] published payment method', {
     eventId: event.id,
     kind: event.kind,
     paymentFormCount: options.paymentForms.length,
