@@ -3,6 +3,7 @@ import * as kinds from 'nostr-tools/kinds'
 import * as marketplace from 'nostr-tools/marketplace'
 
 import type { InboxItem } from '../types'
+import { formatMarketplaceAmount } from '../utils/amountDisplay'
 
 export type ParsedInboxMessage = {
   item: InboxItem
@@ -64,22 +65,22 @@ function marketplaceEventForRumor(rumor: Event): Event {
 }
 
 export function formatAmount(amount: marketplace.MarketplaceAmount | undefined): string {
-  if (!amount) return 'No amount'
-  if (!/^\d+$/.test(amount.value) || amount.decimals === 0) return `${amount.value} ${amount.denomination}`
-  const raw = amount.value.padStart(amount.decimals + 1, '0')
-  const whole = raw.slice(0, -amount.decimals)
-  const fraction = raw.slice(-amount.decimals).replace(/0+$/, '')
-  return `${whole}${fraction ? `.${fraction}` : ''} ${amount.denomination}`
+  return formatMarketplaceAmount(amount)
 }
 
 export function formatDate(value: string | undefined): string | undefined {
   if (!value) return undefined
+  const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly
+    return new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString()
+  }
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : value
 }
 
 function orderTitle(order: marketplace.ParsedOrder): string {
-  return 'Reservation offer'
+  return 'Offer'
 }
 
 function orderSummary(order: marketplace.ParsedOrder): string {
@@ -238,7 +239,7 @@ function orderGroupParticipants(orderGroup: marketplace.ParsedOrderGroup): strin
   return uniqueSorted([
     orderGroup.sellerPubkey,
     ...orderGroup.participantPubkeys,
-    ...orderGroup.escrowPubkeys,
+    ...orderGroup.arbiterPubkeys,
   ])
 }
 

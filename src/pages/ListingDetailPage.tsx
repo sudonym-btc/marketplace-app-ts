@@ -1,52 +1,113 @@
-import { useEffect, useMemo, useState } from 'react'
-import * as marketplace from 'nostr-tools/marketplace'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { CheckCircleIcon, ChevronDownIcon } from 'lucide-react'
+import * as marketplaceSdk from 'nostr-tools/marketplace'
 
+import { CodeHint } from '../codeHints/codeHints'
 import { formatPrice } from '../components/ListingCard'
 import { ProfileChip, profileLabel } from '../components/ProfileChip'
-import { listingAnchor, publishNegotiationOffer } from '../nostr/marketplaceApi'
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  cn,
+} from '../components/ui'
+import { AdvancedAccordion } from '../components/widgets/AdvancedAccordion'
+import { Eyebrow } from '../components/widgets/Eyebrow'
+import { CurrencyInput } from '../components/widgets/CurrencyInput'
+import { DateRangePicker } from '../components/widgets/DateRangePicker'
+import { Facts } from '../components/widgets/FactList'
+import { Field } from '../components/widgets/FormField'
+import { InvoiceBox } from '../components/widgets/InvoiceBox'
+import { ListingReviews, type ListingReviewItem } from '../components/widgets/ListingReviews'
+import { PaymentLifecycles } from '../components/widgets/PaymentLifecycles'
+import { PaymentProgressIndicator } from '../components/widgets/PaymentProgressIndicator'
+import { PaymentRouteSummary, paymentRouteSummary } from '../components/widgets/PaymentRouteSummary'
+import { PaymentStatusPanel } from '../components/widgets/PaymentStatusPanel'
+import { PrivacyOption } from '../components/widgets/PrivacyOption'
+import { AuctionEndValue, TimeAgoText } from '../components/widgets/TimeText'
+import {
+  bidChainStageClass,
+  bidChainStageLabel,
+  deriveLocalAuctionBidPubkeys,
+  isOwnBidChain,
+  isWinningBidChain,
+  publicBidBuyerPubkey,
+  publicBidChainBuyerPubkey,
+  sortBidChains,
+} from '../nostr/auctionBidChains'
 import { shortPubkey } from '../nostr/inboxThreads'
 import { fetchProfiles, type NostrProfile } from '../nostr/profiles'
 import type { AppSession, LoadedMarketplace, NostrPublisher } from '../types'
+import {
+  formatDecimalUnits,
+  formatDenominatedUnits,
+  formatMarketplaceAmount,
+} from '../utils/amountDisplay'
+import {
+  defaultCurrencyDecimals,
+  minimumCurrencyAmount,
+  parseCurrencyAmountInput,
+  validateCurrencyAmountInput,
+  type CurrencyAmount,
+  type CurrencyAmountValidation,
+} from '../utils/currencyAmount'
 
 type Props = {
-  listing?: marketplace.MarketplaceListing
-  marketplaceRuntime: ReturnType<typeof marketplace.bind>
+  listing?: marketplaceSdk.MarketplaceListing
+  marketplace: ReturnType<typeof marketplaceSdk.bind>
   marketplaceState?: LoadedMarketplace
   session?: AppSession
   publisher?: NostrPublisher
+  evmBlockExplorerUrl?: string
   onTradeIndexUsed(index: number): void
   onPublished(): void
   onError(error: string): void
   onLoginRequired(message: string): void
 }
 
-type EscrowServiceChoice = {
+type ArbitrationServiceChoice = {
   key: string
-  service: marketplace.ParsedEscrowService
-  route?: marketplace.MarketplacePaymentRoute
+  service: marketplaceSdk.ParsedArbitrationService
+  route?: marketplaceSdk.MarketplacePaymentRoute
   disabledReason?: string
 }
 
-type EscrowChoice = {
+type ArbiterChoice = {
   pubkey: string
   profile?: NostrProfile
-  services: EscrowServiceChoice[]
+  services: ArbitrationServiceChoice[]
   disabledReason?: string
 }
 
 type PaymentFlowStatus = 'idle' | 'working' | 'success' | 'error'
 
-function daysBetween(start: string, end: string): number {
-  const left = new Date(start).getTime()
-  const right = new Date(end).getTime()
-  if (!Number.isFinite(left) || !Number.isFinite(right) || right <= left) return 1
-  return Math.max(1, Math.ceil((right - left) / 86_400_000))
-}
+const DEFAULT_CHECKOUT_PUBLIC = false
+const DEFAULT_BID_PUBLIC = true
 
-function frequencyMultiplier(frequency: string | undefined, start: string, end: string): bigint {
-  if (!frequency) return 1n
-  if (frequency === 'P1D' || frequency.toLowerCase().includes('day')) return BigInt(daysBetween(start, end))
-  return 1n
+function FlowDoneView({ body }: { body?: string }) {
+  return (
+    <div className="grid min-h-64 place-items-center rounded-lg border bg-muted/30 p-8 text-center">
+      <div className="grid justify-items-center gap-3">
+        <CheckCircleIcon className="size-14 text-green-500" aria-hidden="true" />
+        <div className="grid gap-1">
+          <strong className="text-xl">Done</strong>
+          {body && <p className="m-0 max-w-sm text-sm text-muted-foreground">{body}</p>}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function parseDecimalAmount(value: string): { units: bigint; decimals: number } {
@@ -80,56 +141,56 @@ function decimalToUnits(value: string, decimals: number): bigint {
   return units / scale
 }
 
-function amountForPrice(value: string, currency: string, multiplier = 1n): marketplace.MarketplaceAmount {
-  const parsed = parseDecimalAmount(value)
-  return {
-    value: (parsed.units * multiplier).toString(),
-    denomination: currency,
-    decimals: parsed.decimals,
-  }
-}
-
 function denomination(value: string): string {
-  return value.toUpperCase()
+  const normalized = value.toUpperCase()
+  if (normalized === 'SAT' || normalized === 'SATS' || normalized === 'XBT') return 'BTC'
+  if (normalized === 'USDT' || normalized === 'USDC') return 'USD'
+  return normalized
 }
 
-function isBtcSatPair(left: string, right: string): boolean {
-  const a = denomination(left)
-  const b = denomination(right)
-  return (a === 'BTC' && b === 'SAT') || (a === 'SAT' && b === 'BTC')
-}
-
-function amountForAuctionRoute(value: string, currency: string, asset: marketplace.MarketplacePaymentAsset): marketplace.MarketplaceAmount {
-  const targetDecimals = isBtcSatPair(currency, asset.denomination)
-    ? denomination(currency) === 'BTC' ? 8 : 0
-    : asset.decimals
+function amountForAuctionRoute(value: string, currency: string, asset: marketplaceSdk.MarketplacePaymentAsset): marketplaceSdk.MarketplaceAmount {
+  void asset
+  const normalized = denomination(currency)
+  const targetDecimals = defaultCurrencyDecimals(normalized) ?? 0
   const units = decimalToUnits(value, targetDecimals)
   return {
     value: units.toString(),
-    denomination: currency,
+    currency: normalized,
+    denomination: normalized,
     decimals: targetDecimals,
   }
 }
 
-function displayTotal(value: string, multiplier: bigint): string {
+function auctionRouteAmountDecimals(
+  currency: string,
+  asset: marketplaceSdk.MarketplacePaymentAsset | undefined,
+): number | undefined {
+  void asset
+  return defaultCurrencyDecimals(denomination(currency))
+}
+
+function currencyAmountLimits(amount: CurrencyAmount | undefined): CurrencyAmount[] | undefined {
+  return amount ? [amount] : undefined
+}
+
+function minimumAmountLimits(denomination: string, decimals: number | undefined): CurrencyAmount[] | undefined {
+  return currencyAmountLimits(minimumCurrencyAmount(denomination, decimals))
+}
+
+function currencyAmountLimitFromDecimal(
+  value: string | undefined,
+  denomination: string,
+  decimals: number | undefined,
+): CurrencyAmount[] | undefined {
+  if (!value || !denomination) return undefined
   try {
-    const amount = parseDecimalAmount(value)
-    return formatUnits(amount.units * multiplier, amount.decimals)
+    return [parseCurrencyAmountInput(value, { denomination, decimals })]
   } catch {
-    return value
+    return undefined
   }
 }
 
-function compareDecimalAmounts(left: string, right: string): number {
-  const a = parseDecimalAmount(left)
-  const b = parseDecimalAmount(right)
-  const decimals = Math.max(a.decimals, b.decimals)
-  const leftUnits = a.units * 10n ** BigInt(decimals - a.decimals)
-  const rightUnits = b.units * 10n ** BigInt(decimals - b.decimals)
-  return leftUnits === rightUnits ? 0 : leftUnits > rightUnits ? 1 : -1
-}
-
-function amountForNegotiation(value: string, denomination: string): marketplace.MarketplaceAmount {
+function amountForNegotiation(value: string, denomination: string): marketplaceSdk.MarketplaceAmount {
   const parsed = parseDecimalAmount(value)
   return {
     value,
@@ -138,44 +199,57 @@ function amountForNegotiation(value: string, denomination: string): marketplace.
   }
 }
 
-function isBelowTotal(offer: string, total: string | undefined): boolean {
-  if (!offer || !total) return false
-  try {
-    return compareDecimalAmounts(offer, total) < 0
-  } catch {
-    return false
-  }
-}
-
-function stringifyProgress(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, entry) => (typeof entry === 'bigint' ? entry.toString() : entry),
-    2,
-  )
-}
-
 function readableError(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
-function escrowProfileLabel(pubkey: string, profile?: NostrProfile): string {
+function arbiterProfileLabel(pubkey: string, profile?: NostrProfile): string {
   const label = profileLabel(pubkey, profile)
   return label === shortPubkey(pubkey) ? label : `${label} (${shortPubkey(pubkey)})`
 }
 
-function serviceChoiceKey(service: marketplace.ParsedEscrowService): string {
+function serviceChoiceKey(service: marketplaceSdk.ParsedArbitrationService): string {
   return service.event.id
 }
 
-function routeForService(
-  service: marketplace.ParsedEscrowService,
-  routes: marketplace.MarketplacePaymentRoute[],
-): marketplace.MarketplacePaymentRoute | undefined {
-  return routes.find(route => route.escrowService.event.id === service.event.id)
+function routeAmountForCurrency(currency: string): marketplaceSdk.MarketplaceAmount {
+  const normalized = denomination(currency)
+  const decimals = defaultCurrencyDecimals(normalized) ?? 0
+  return {
+    value: '0',
+    currency: normalized,
+    denomination: normalized,
+    decimals,
+  }
 }
 
-function serviceChoiceLabel(choice: EscrowServiceChoice): string {
+function arbiterChoicesForRoutes(
+  routes: marketplaceSdk.MarketplacePaymentRoute[],
+  profiles: Map<string, NostrProfile>,
+): ArbiterChoice[] {
+  const choicesByPubkey = new Map<string, ArbiterChoice>()
+  for (const route of routes) {
+    const pubkey = route.arbitrationService.event.pubkey
+    const choice = choicesByPubkey.get(pubkey) ?? {
+      pubkey,
+      profile: profiles.get(pubkey),
+      services: [],
+    }
+    if (!choicesByPubkey.has(pubkey)) choicesByPubkey.set(pubkey, choice)
+
+    const key = serviceChoiceKey(route.arbitrationService)
+    if (!choice.services.some(service => service.key === key)) {
+      choice.services.push({
+        key,
+        service: route.arbitrationService,
+        route,
+      })
+    }
+  }
+  return [...choicesByPubkey.values()]
+}
+
+function serviceChoiceLabel(choice: ArbitrationServiceChoice): string {
   const service = choice.service
   const parts = [
     service.content.type,
@@ -188,29 +262,20 @@ function serviceChoiceLabel(choice: EscrowServiceChoice): string {
   return parts.filter(Boolean).join(' / ')
 }
 
-function routeProbeForCurrency(
-  listing: marketplace.MarketplaceListing,
-  currency: string,
-): marketplace.OrderTemplate {
-  return {
-    tradeId: 'route-probe',
-    listingAnchor: listingAnchor(listing.event),
-    amount: {
-      value: '0',
-      denomination: currency,
-      decimals: 0,
-    },
-    participants: [
-      { pubkey: listing.event.pubkey, role: 'seller' },
-    ],
-  }
+function routeSummary(route: marketplaceSdk.MarketplacePaymentRoute | undefined, service: ArbitrationServiceChoice | undefined): string | undefined {
+  return paymentRouteSummary(route, service?.service.content.type)
 }
 
-function routeProbeFor(
-  listing: marketplace.MarketplaceListing,
-  price: marketplace.MarketplacePrice,
-): marketplace.OrderTemplate {
-  return routeProbeForCurrency(listing, price.currency)
+function routeCurrency(asset: marketplaceSdk.MarketplacePaymentAsset): string {
+  return denomination(asset.currency ?? asset.denomination)
+}
+
+function bidRouteMatchesAuction(
+  route: marketplaceSdk.MarketplacePaymentRoute,
+  auction: marketplaceSdk.ParsedMarketplaceAuction,
+): boolean {
+  return route.arbitrationService.event.pubkey === auction.arbiterPubkey &&
+    routeCurrency(route.asset) === denomination(auction.currency)
 }
 
 function dateTimeLocalFromSeconds(seconds: number): string {
@@ -233,13 +298,13 @@ function formatDateTime(seconds: number | undefined): string {
   }).format(new Date(seconds * 1000))
 }
 
-function auctionStatus(auction: marketplace.ParsedMarketplaceAuction, now = Math.floor(Date.now() / 1000)): string {
+function auctionStatus(auction: marketplaceSdk.ParsedMarketplaceAuction, now = Math.floor(Date.now() / 1000)): string {
   if (auction.startAt && now < auction.startAt) return 'Scheduled'
   if (auction.endAt && now > auction.endAt) return 'Ended'
   return 'Live'
 }
 
-function auctionCompleteLabel(complete: marketplace.ParsedMarketplaceAuctionComplete | undefined): string | undefined {
+function auctionCompleteLabel(complete: marketplaceSdk.ParsedMarketplaceAuctionComplete | undefined): string | undefined {
   if (!complete) return undefined
   if (complete.status === 'closed') return 'Closed'
   if (complete.status === 'reserve_not_met') return 'Reserve not met'
@@ -248,83 +313,192 @@ function auctionCompleteLabel(complete: marketplace.ParsedMarketplaceAuctionComp
 }
 
 function auctionDisplayStatus(
-  auction: marketplace.ParsedMarketplaceAuction,
-  complete: marketplace.ParsedMarketplaceAuctionComplete | undefined,
+  auction: marketplaceSdk.ParsedMarketplaceAuction,
+  complete: marketplaceSdk.ParsedMarketplaceAuctionComplete | undefined,
 ): string {
   return auctionCompleteLabel(complete) ?? auctionStatus(auction)
 }
 
-function auctionCompleteMap(
-  completes: marketplace.ParsedMarketplaceAuctionComplete[],
-): Record<string, marketplace.ParsedMarketplaceAuctionComplete> {
-  return Object.fromEntries(completes.map(complete => [complete.auctionAnchor, complete]))
+function plural(value: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${value} ${value === 1 ? singular : pluralForm}`
 }
 
-function completeWinningBidId(complete: marketplace.ParsedMarketplaceAuctionComplete | undefined): string | undefined {
-  const data = complete?.content.data
-  if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const winningBidId = (data as Record<string, unknown>).winningBidId
-    if (typeof winningBidId === 'string' && winningBidId.length > 0) return winningBidId
-  }
-  return complete?.winningBidId
+function EventFactGrid({ facts }: { facts: Array<{ label: string; value?: ReactNode }> }) {
+  const visibleFacts = facts.filter(fact => fact.value !== undefined && fact.value !== null && fact.value !== '')
+  if (visibleFacts.length === 0) return null
+  return (
+    <dl className="grid gap-2 text-xs leading-5 sm:grid-cols-2">
+      {visibleFacts.map(fact => (
+        <div className="min-w-0" key={fact.label}>
+          <dt className="uppercase text-muted-foreground">{fact.label}</dt>
+          <dd className="mt-0.5 font-mono text-foreground [overflow-wrap:anywhere]">{fact.value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
 }
 
-function isWinningBidGroup(
-  group: marketplace.ParsedAuctionBidGroup,
-  complete: marketplace.ParsedMarketplaceAuctionComplete | undefined,
-): boolean {
-  const winner = completeWinningBidId(complete)
-  return Boolean(winner && (winner === group.bid.event.id || winner === group.bidId))
-}
-
-function bidStageLabel(
-  group: marketplace.ParsedAuctionBidGroup,
-  complete: marketplace.ParsedMarketplaceAuctionComplete | undefined,
-): string {
-  if (group.settlement?.content.action === 'auction_promote') return 'Promoted to order'
-  if (group.settlement?.content.action === 'auction_refund') return 'Refunded'
-  if (complete && isWinningBidGroup(group, complete)) return 'Selected winner'
-  if (complete) return 'Outbid'
-  if (group.paymentNack) return 'Escrow rejected'
-  if (group.paymentAck) return 'Escrow accepted'
-  if (group.payment) return 'Funded, awaiting escrow'
-  return 'Bid sent'
-}
-
-function bidStageClass(
-  group: marketplace.ParsedAuctionBidGroup,
-  complete: marketplace.ParsedMarketplaceAuctionComplete | undefined,
-): string {
-  if (group.settlement?.content.action === 'auction_promote' || (complete && isWinningBidGroup(group, complete))) {
-    return 'commit'
-  }
-  if (group.paymentNack) return 'cancel'
-  return ''
+function AuctionBidChainAccordion({
+  bidProfiles,
+  chain,
+  complete,
+  evmBlockExplorerUrl,
+  expanded,
+  onToggle,
+}: {
+  bidProfiles: Map<string, NostrProfile>
+  chain: marketplaceSdk.ParsedAuctionBidChain
+  complete: marketplaceSdk.ParsedMarketplaceAuctionComplete | undefined
+  evmBlockExplorerUrl?: string
+  expanded: boolean
+  onToggle(): void
+}) {
+  const publicBuyerPubkey = publicBidChainBuyerPubkey(chain)
+  const stageClass = bidChainStageClass(chain, complete)
+  const arbiterEventCount = chain.groups.reduce(
+    (sum, group) => sum + group.paymentAcks.length + group.paymentNacks.length + group.settlements.length,
+    0,
+  )
+  return (
+    <div className={`rounded-lg border ${isWinningBidChain(chain, complete) ? 'bg-muted/50' : 'bg-muted/30'}`}>
+      <button
+        aria-expanded={expanded}
+        className="flex w-full min-w-0 items-center justify-between gap-4 rounded-lg p-3 text-left outline-none transition hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+        onClick={onToggle}
+        type="button"
+      >
+        <div className="grid min-w-0 gap-1">
+          <strong>{formatMarketplaceAmount(chain.amount)}</strong>
+          {publicBuyerPubkey ? (
+            <ProfileChip compact pubkey={publicBuyerPubkey} profile={bidProfiles.get(publicBuyerPubkey)} />
+          ) : (
+            <span className="text-xs font-medium text-muted-foreground">Anonymous bid</span>
+          )}
+          <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            updated <TimeAgoText seconds={chain.head.bid.event.created_at} />
+            {' · '}
+            head {shortPubkey(chain.head.tradeId)}
+            {' · '}
+            {plural(chain.groups.length, 'bid')}
+            {' · '}
+            {plural(chain.paymentEventIds.length, 'payment')}
+            {' · '}
+            {chain.complete ? 'complete chain' : 'incomplete chain'}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant={stageClass === 'cancel' ? 'destructive' : stageClass === 'commit' ? 'default' : 'secondary'}>
+            {bidChainStageLabel(chain, complete)}
+          </Badge>
+          <ChevronDownIcon
+            aria-hidden="true"
+            className={`size-4 text-muted-foreground transition-transform ${expanded ? 'rotate-180' : ''}`}
+          />
+        </div>
+      </button>
+      {expanded && (
+        <div className="grid gap-3 border-t p-3">
+          <EventFactGrid facts={[
+            { label: 'Bid chain', value: chain.id },
+            { label: 'Total', value: formatMarketplaceAmount(chain.amount) },
+            { label: 'Head bid', value: chain.head.bid.event.id },
+            { label: 'Head trade', value: chain.head.tradeId },
+            { label: 'Updated', value: <TimeAgoText seconds={chain.head.bid.event.created_at} /> },
+            { label: 'Bid legs', value: plural(chain.groups.length, 'bid') },
+            { label: 'Payment events', value: plural(chain.paymentEventIds.length, 'payment') },
+            { label: 'Complete', value: chain.complete ? 'Yes' : 'No' },
+          ]} />
+          {arbiterEventCount === 0 && (
+            <p className="m-0 rounded-lg border border-dashed p-3 text-sm leading-6 text-muted-foreground">
+              No arbiter ACK, NACK, or payment promote/refund event has been published for this chain yet.
+            </p>
+          )}
+          <div className="grid gap-3">
+            {chain.groups.map((group, index) => {
+              const isHead = group.bid.event.id === chain.head.bid.event.id
+              return (
+                <div className="grid gap-3 rounded-lg border bg-background p-3" key={group.id}>
+                  <div className="flex min-w-0 items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <strong className="block text-sm font-medium">
+                        {isHead ? 'Current bid leg' : `Bid leg ${index + 1}`}
+                      </strong>
+                      <span className="mt-1 block text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                        trade {shortPubkey(group.tradeId)} · bid <TimeAgoText seconds={group.bid.event.created_at} />
+                      </span>
+                    </div>
+                    <Badge className="shrink-0" variant="outline">{formatMarketplaceAmount(group.amount)}</Badge>
+                  </div>
+                  <EventFactGrid facts={[
+                    { label: 'Bid group', value: group.id },
+                    { label: 'Trade', value: group.tradeId },
+                    { label: 'Bid event', value: group.bid.event.id },
+                    { label: 'Payment event', value: group.payment?.event.id },
+                    { label: 'Latest ACK', value: group.paymentAck?.event.id },
+                    { label: 'Latest NACK', value: group.paymentNack?.event.id },
+                    { label: 'Latest promote/refund', value: group.settlement?.event.id },
+                  ]} />
+                  <PaymentLifecycles
+                    evmBlockExplorerUrl={evmBlockExplorerUrl}
+                    payments={group.payments}
+                    paymentAcks={group.paymentAcks}
+                    paymentNacks={group.paymentNacks}
+                    settlements={group.settlements}
+                    emptyText="No payment, ACK, NACK, or settlement event has been published for this bid leg yet."
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function safeUnits(value: string | undefined): bigint {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n
 }
 
-function highestBidUnits(groups: marketplace.ParsedAuctionBidGroup[]): bigint {
-  return groups.reduce((highest, group) => {
-    const value = safeUnits(group.amount.value)
+function bidChainUnits(chain: marketplaceSdk.ParsedAuctionBidChain): bigint {
+  return safeUnits(chain.amount.value)
+}
+
+function highestBidChainUnits(chains: marketplaceSdk.ParsedAuctionBidChain[]): bigint {
+  return chains.reduce((highest, chain) => {
+    const value = bidChainUnits(chain)
     return value > highest ? value : highest
   }, 0n)
 }
 
-function defaultBidAmount(
-  auction: marketplace.ParsedMarketplaceAuction,
-  groups: marketplace.ParsedAuctionBidGroup[],
-): string {
-  const highest = highestBidUnits(groups)
+function minimumNextBidUnits(
+  auction: marketplaceSdk.ParsedMarketplaceAuction,
+  chains: marketplaceSdk.ParsedAuctionBidChain[],
+): bigint {
+  const highest = highestBidChainUnits(chains)
   const minimum = safeUnits(auction.startingBid)
   const increment = safeUnits(auction.minIncrement)
-  const next = highest > 0n ? highest + (increment > 0n ? increment : 1n) : minimum
-  return formatUnits(next, auction.decimals)
+  if (highest <= 0n) return minimum
+  return highest + (increment > 0n ? increment : 1n)
 }
 
-function sortBidGroups(groups: marketplace.ParsedAuctionBidGroup[]): marketplace.ParsedAuctionBidGroup[] {
+function defaultBidAddAmount(
+  auction: marketplaceSdk.ParsedMarketplaceAuction,
+  chains: marketplaceSdk.ParsedAuctionBidChain[],
+  previousChain: marketplaceSdk.ParsedAuctionBidChain | undefined,
+): string {
+  const previousTotal = previousChain ? bidChainUnits(previousChain) : 0n
+  const target = minimumNextBidUnits(auction, chains)
+  const increment = safeUnits(auction.minIncrement)
+  const addAmount = previousChain
+    ? target > previousTotal
+      ? target - previousTotal
+      : (increment > 0n ? increment : 1n)
+    : target
+  return formatUnits(addAmount, auction.decimals)
+}
+
+function sortBidGroups(groups: marketplaceSdk.ParsedAuctionBidGroup[]): marketplaceSdk.ParsedAuctionBidGroup[] {
   return [...groups].sort((left, right) => {
     const rightValue = safeUnits(right.amount.value)
     const leftValue = safeUnits(left.amount.value)
@@ -333,16 +507,27 @@ function sortBidGroups(groups: marketplace.ParsedAuctionBidGroup[]): marketplace
   })
 }
 
-function uniqueCurrencies(listing: marketplace.MarketplaceListing | undefined): string[] {
+function latestOwnBidChain(
+  chains: marketplaceSdk.ParsedAuctionBidChain[],
+  sessionPubkey: string | undefined,
+  localAuctionBidPubkeys: Set<string>,
+): marketplaceSdk.ParsedAuctionBidChain | undefined {
+  return sortBidChains(
+    chains.filter(chain => isOwnBidChain(chain, sessionPubkey, localAuctionBidPubkeys)),
+  )[0]
+}
+
+function uniqueCurrencies(listing: marketplaceSdk.MarketplaceListing | undefined): string[] {
   return [...new Set((listing?.prices ?? []).map(item => item.currency).filter(Boolean))]
 }
 
 export function ListingDetailPage({
   listing,
-  marketplaceRuntime,
+  marketplace,
   marketplaceState,
   session,
   publisher,
+  evmBlockExplorerUrl,
   onTradeIndexUsed,
   onPublished,
   onError,
@@ -352,29 +537,38 @@ export function ListingDetailPage({
   const [end, setEnd] = useState('')
   const [publishing, setPublishing] = useState(false)
   const [invoice, setInvoice] = useState<string>()
-  const [paymentMessages, setPaymentMessages] = useState<string[]>([])
+  const [checkoutInvoiceActive, setCheckoutInvoiceActive] = useState(false)
+  const [checkoutProgressMessage, setCheckoutProgressMessage] = useState('Creating the order payment with the selected arbitration route.')
   const [checkoutPaymentOpen, setCheckoutPaymentOpen] = useState(false)
   const [checkoutFlowStatus, setCheckoutFlowStatus] = useState<PaymentFlowStatus>('idle')
   const [checkoutFlowError, setCheckoutFlowError] = useState<string>()
+  const [checkoutPublic, setCheckoutPublic] = useState(DEFAULT_CHECKOUT_PUBLIC)
+  const [checkoutPaymentPrivate, setCheckoutPaymentPrivate] = useState(false)
   const [offerAmount, setOfferAmount] = useState('')
   const [offerTouched, setOfferTouched] = useState(false)
-  const [escrowPickerOpen, setEscrowPickerOpen] = useState(false)
-  const [escrowPickerLoading, setEscrowPickerLoading] = useState(false)
-  const [escrowPickerError, setEscrowPickerError] = useState<string>()
-  const [escrowChoices, setEscrowChoices] = useState<EscrowChoice[]>([])
-  const [selectedEscrowPubkey, setSelectedEscrowPubkey] = useState('')
+  const [negotiateOpen, setNegotiateOpen] = useState(false)
+  const [arbiterPickerOpen, setArbiterPickerOpen] = useState(false)
+  const [arbiterPickerLoading, setArbiterPickerLoading] = useState(false)
+  const [arbiterPickerError, setArbiterPickerError] = useState<string>()
+  const [arbiterChoices, setArbiterChoices] = useState<ArbiterChoice[]>([])
+  const [selectedArbiterPubkey, setSelectedArbiterPubkey] = useState('')
   const [selectedServiceKey, setSelectedServiceKey] = useState('')
-  const [auctions, setAuctions] = useState<marketplace.ParsedMarketplaceAuction[]>([])
+  const [reviews, setReviews] = useState<marketplaceSdk.ParsedReview[]>([])
+  const [reviewsLoading, setReviewsLoading] = useState(false)
+  const [reviewsError, setReviewsError] = useState<string>()
+  const [reviewProfiles, setReviewProfiles] = useState<Map<string, NostrProfile>>(() => new Map())
+  const [auctions, setAuctions] = useState<marketplaceSdk.ParsedMarketplaceAuction[]>([])
   const [auctionLoading, setAuctionLoading] = useState(false)
   const [auctionError, setAuctionError] = useState<string>()
-  const [bidGroupsByAuction, setBidGroupsByAuction] = useState<Record<string, marketplace.ParsedAuctionBidGroup[]>>({})
-  const [auctionCompletesByAuction, setAuctionCompletesByAuction] = useState<Record<string, marketplace.ParsedMarketplaceAuctionComplete>>({})
+  const [bidGroupsByAuction, setBidGroupsByAuction] = useState<Record<string, marketplaceSdk.ParsedAuctionBidGroup[]>>({})
+  const [bidProfiles, setBidProfiles] = useState<Map<string, NostrProfile>>(() => new Map())
+  const [auctionCompletesByAuction, setAuctionCompletesByAuction] = useState<Record<string, marketplaceSdk.ParsedMarketplaceAuctionComplete>>({})
   const [auctionModalOpen, setAuctionModalOpen] = useState(false)
   const [auctionPublishing, setAuctionPublishing] = useState(false)
-  const [auctionEscrowLoading, setAuctionEscrowLoading] = useState(false)
-  const [auctionEscrowError, setAuctionEscrowError] = useState<string>()
-  const [auctionEscrowChoices, setAuctionEscrowChoices] = useState<EscrowChoice[]>([])
-  const [selectedAuctionEscrowPubkey, setSelectedAuctionEscrowPubkey] = useState('')
+  const [auctionArbiterLoading, setAuctionArbiterLoading] = useState(false)
+  const [auctionArbiterError, setAuctionArbiterError] = useState<string>()
+  const [auctionArbiterChoices, setAuctionArbiterChoices] = useState<ArbiterChoice[]>([])
+  const [selectedAuctionArbiterPubkey, setSelectedAuctionArbiterPubkey] = useState('')
   const [selectedAuctionServiceKey, setSelectedAuctionServiceKey] = useState('')
   const [auctionCurrency, setAuctionCurrency] = useState('')
   const [auctionStart, setAuctionStart] = useState('')
@@ -383,30 +577,117 @@ export function ListingDetailPage({
   const [auctionMinIncrement, setAuctionMinIncrement] = useState('1')
   const [auctionReserve, setAuctionReserve] = useState('')
   const [bidAuctionAnchor, setBidAuctionAnchor] = useState('')
-  const [bidAuctionSnapshot, setBidAuctionSnapshot] = useState<marketplace.ParsedMarketplaceAuction>()
+  const [bidAuctionSnapshot, setBidAuctionSnapshot] = useState<marketplaceSdk.ParsedMarketplaceAuction>()
   const [bidAmount, setBidAmount] = useState('')
   const [bidPublishing, setBidPublishing] = useState(false)
   const [bidInvoice, setBidInvoice] = useState<string>()
-  const [bidMessages, setBidMessages] = useState<string[]>([])
+  const [bidInvoiceActive, setBidInvoiceActive] = useState(false)
+  const [bidProgressMessage, setBidProgressMessage] = useState('Creating the funded bid with the selected auction arbiter.')
   const [bidFlowStatus, setBidFlowStatus] = useState<PaymentFlowStatus>('idle')
   const [bidFlowError, setBidFlowError] = useState<string>()
+  const [bidPublic, setBidPublic] = useState(DEFAULT_BID_PUBLIC)
+  const [bidPaymentPrivate, setBidPaymentPrivate] = useState(false)
+  const [selectedBidRoute, setSelectedBidRoute] = useState<marketplaceSdk.MarketplacePaymentRoute>()
+  const [bidRouteLoading, setBidRouteLoading] = useState(false)
+  const [bidRouteError, setBidRouteError] = useState<string>()
+  const [bidArbiterProfile, setBidArbiterProfile] = useState<NostrProfile>()
+  const [bidPreviousChainSnapshot, setBidPreviousChainSnapshot] = useState<marketplaceSdk.ParsedAuctionBidChain>()
+  const [localAuctionBidPubkeys, setLocalAuctionBidPubkeys] = useState<Set<string>>(() => new Set())
+  const [expandedBidGroupKey, setExpandedBidGroupKey] = useState<string>()
   const price = listing?.prices[0]
-  const listingAnchorValue = useMemo(() => listing ? listingAnchor(listing.event) : '', [listing])
+  const listingAnchorValue = useMemo(() => listing ? marketplace.listings.anchor(listing) : '', [listing, marketplace])
+  const reviewItems = useMemo<ListingReviewItem[]>(
+    () => reviews.map(review => {
+      const buyerPubkey = marketplace.reviews.revealedBuyerPubkey(review)
+      return {
+        review,
+        ...(buyerPubkey ? { buyerPubkey } : {}),
+      }
+    }),
+    [reviews],
+  )
   const isSeller = Boolean(listing && session?.pubkey === listing.event.pubkey)
   const availableAuctionCurrencies = useMemo(() => uniqueCurrencies(listing), [listing])
+  const publicBidPubkeys = useMemo(() => {
+    const pubkeys = Object.values(bidGroupsByAuction)
+      .flatMap(groups => groups.map(publicBidBuyerPubkey))
+      .filter((pubkey): pubkey is string => Boolean(pubkey))
+    return [...new Set(pubkeys)]
+  }, [bidGroupsByAuction])
+  const bidChainsByAuction = useMemo<Record<string, marketplaceSdk.ParsedAuctionBidChain[]>>(() => {
+    return Object.fromEntries(Object.entries(bidGroupsByAuction).map(([auctionAnchor, groups]) => [
+      auctionAnchor,
+      sortBidChains(marketplace.auctions.bidGroups.chains(groups)),
+    ]))
+  }, [bidGroupsByAuction])
+  const totalAmount = useMemo(() => {
+    if (!listing) return undefined
+    try {
+      return marketplace.listings.price(listing, { start, end })
+    } catch (err) {
+      console.warn('[marketplace-app] unable to calculate listing price', {
+        listingId: listing.event.id,
+      }, err)
+      return undefined
+    }
+  }, [end, listing, marketplace, start])
   const total = useMemo(() => {
-    if (!price) return undefined
-    return displayTotal(price.amount, frequencyMultiplier(price.frequency, start, end))
-  }, [end, price, start])
-  const offerIsBelowTotal = Boolean(
-    listing?.negotiable &&
-    price &&
-    isBelowTotal(offerAmount, total),
+    if (!totalAmount || !/^\d+$/.test(totalAmount.value)) return undefined
+    return formatDecimalUnits(BigInt(totalAmount.value), totalAmount.decimals)
+  }, [totalAmount])
+  const formattedTotal = useMemo(() => {
+    if (!totalAmount) return '0'
+    return formatMarketplaceAmount(totalAmount, '0')
+  }, [totalAmount])
+  const priceCurrencyDecimals = useMemo(
+    () => price ? defaultCurrencyDecimals(price.currency) : undefined,
+    [price],
   )
+  const offerMinimum = useMemo(
+    () => price ? minimumAmountLimits(price.currency, priceCurrencyDecimals) : undefined,
+    [price, priceCurrencyDecimals],
+  )
+  const offerMaximum = useMemo(
+    () => price ? currencyAmountLimitFromDecimal(total, price.currency, priceCurrencyDecimals) : undefined,
+    [price, priceCurrencyDecimals, total],
+  )
+  const offerAmountValidation = useMemo<CurrencyAmountValidation>(
+    () => price
+      ? validateCurrencyAmountInput(offerAmount, {
+          decimals: priceCurrencyDecimals,
+          denomination: price.currency,
+          max: offerMaximum,
+          min: offerMinimum,
+          required: true,
+        })
+      : { valid: true },
+    [offerAmount, offerMaximum, offerMinimum, price, priceCurrencyDecimals],
+  )
+  const marketplaceSession = marketplaceState?.runtime
 
   useEffect(() => {
     if (!offerTouched) setOfferAmount(total ?? '')
   }, [offerTouched, total])
+
+  useEffect(() => {
+    if (!session || !marketplaceState || !marketplaceSession) {
+      setLocalAuctionBidPubkeys(new Set())
+      return
+    }
+    let closed = false
+    void (async () => {
+      try {
+        const pubkeys = await deriveLocalAuctionBidPubkeys(session, marketplaceState)
+        if (!closed) setLocalAuctionBidPubkeys(pubkeys)
+      } catch (err) {
+        console.warn('[marketplace-app] unable to derive local auction bid pubkeys', err)
+        if (!closed) setLocalAuctionBidPubkeys(new Set())
+      }
+    })()
+    return () => {
+      closed = true
+    }
+  }, [marketplaceState, session])
 
   useEffect(() => {
     setAuctionCurrency(current => current || availableAuctionCurrencies[0] || price?.currency || '')
@@ -414,6 +695,81 @@ export function ListingDetailPage({
     setAuctionStart(current => current || dateTimeLocalFromSeconds(Math.floor(Date.now() / 1000) + 3600))
     setAuctionEnd(current => current || dateTimeLocalFromSeconds(Math.floor(Date.now() / 1000) + 86_400))
   }, [availableAuctionCurrencies, price])
+
+  useEffect(() => {
+    if (!listingAnchorValue) {
+      setReviews([])
+      setReviewsLoading(false)
+      setReviewsError(undefined)
+      return
+    }
+
+    let closed = false
+    setReviewsLoading(true)
+    setReviewsError(undefined)
+    void marketplace.reviews.search({ listingAnchor: listingAnchorValue, limit: 80 }, { maxWait: 1500 })
+      .then(nextReviews => {
+        if (!closed) setReviews(nextReviews)
+      })
+      .catch(err => {
+        console.warn('[marketplace-app] unable to fetch listing reviews', {
+          listingAnchor: listingAnchorValue,
+        }, err)
+        if (!closed) setReviewsError(err instanceof Error ? err.message : 'Unable to load reviews')
+      })
+      .finally(() => {
+        if (!closed) setReviewsLoading(false)
+      })
+
+    return () => {
+      closed = true
+    }
+  }, [listingAnchorValue, marketplace])
+
+  useEffect(() => {
+    const pubkeys = reviewItems
+      .map(item => item.buyerPubkey)
+      .filter((pubkey): pubkey is string => Boolean(pubkey))
+    if (!session || pubkeys.length === 0) {
+      setReviewProfiles(new Map())
+      return
+    }
+
+    let closed = false
+    void fetchProfiles(session, pubkeys)
+      .then(profiles => {
+        if (!closed) setReviewProfiles(profiles)
+      })
+      .catch(err => {
+        console.warn('[marketplace-app] unable to fetch review buyer profiles', { pubkeyCount: pubkeys.length }, err)
+        if (!closed) setReviewProfiles(new Map())
+      })
+
+    return () => {
+      closed = true
+    }
+  }, [reviewItems, session])
+
+  useEffect(() => {
+    if (!session || publicBidPubkeys.length === 0) {
+      setBidProfiles(new Map())
+      return
+    }
+
+    let closed = false
+    void fetchProfiles(session, publicBidPubkeys)
+      .then(profiles => {
+        if (!closed) setBidProfiles(profiles)
+      })
+      .catch(err => {
+        console.warn('[marketplace-app] unable to fetch public bid profiles', { pubkeyCount: publicBidPubkeys.length }, err)
+        if (!closed) setBidProfiles(new Map())
+      })
+
+    return () => {
+      closed = true
+    }
+  }, [publicBidPubkeys, session])
 
   useEffect(() => {
     if (!listing || !listingAnchorValue) {
@@ -425,11 +781,10 @@ export function ListingDetailPage({
 
     let closed = false
     let closer: { close(reason?: string): void } | undefined
-    let completeCloser: { close(reason?: string): void } | undefined
     setAuctionLoading(true)
     setAuctionError(undefined)
 
-    void marketplaceRuntime.auctions.search({ listingAnchor: listingAnchorValue, limit: 20 })
+    void marketplace.auctions.search({ listingAnchor: listingAnchorValue, limit: 20 })
       .then(nextAuctions => {
         if (!closed) setAuctions(nextAuctions)
       })
@@ -440,18 +795,8 @@ export function ListingDetailPage({
 	        if (!closed) setAuctionLoading(false)
 	      })
 
-	    void marketplaceRuntime.auctions.completes.search({ listingAnchor: listingAnchorValue, limit: 50 })
-	      .then(completes => {
-	        if (!closed) setAuctionCompletesByAuction(auctionCompleteMap(completes))
-	      })
-	      .catch(err => {
-	        console.warn('[marketplace-app] unable to fetch auction close events', {
-	          listingAnchor: listingAnchorValue,
-	        }, err)
-	      })
-
     try {
-      closer = marketplaceRuntime.auctions.subscribe(
+      closer = marketplace.auctions.subscribe(
         { listingAnchor: listingAnchorValue, limit: 20 },
         {
           onauctions(nextAuctions) {
@@ -467,35 +812,16 @@ export function ListingDetailPage({
 	      console.warn('[marketplace-app] unable to subscribe to listing auctions', err)
 	    }
 
-	    try {
-	      completeCloser = marketplaceRuntime.auctions.completes.subscribe(
-	        { listingAnchor: listingAnchorValue, limit: 50 },
-	        {
-	          oncompletes(completes) {
-	            if (!closed) setAuctionCompletesByAuction(auctionCompleteMap(completes))
-	          },
-	          oninvalid(event, error) {
-	            console.warn('[marketplace-app] ignoring invalid auction close event', { eventId: event.id }, error)
-	          },
-	        },
-	        { label: `listing-auction-completes:${listingAnchorValue}` },
-	      )
-	    } catch (err) {
-	      console.warn('[marketplace-app] unable to subscribe to auction close events', {
-	        listingAnchor: listingAnchorValue,
-	      }, err)
-	    }
-
 	    return () => {
 	      closed = true
 	      closer?.close('listing changed')
-	      completeCloser?.close('listing changed')
 	    }
-	  }, [listing, listingAnchorValue, marketplaceRuntime])
+	  }, [listing, listingAnchorValue, marketplace])
 
   useEffect(() => {
     if (auctions.length === 0) {
       setBidGroupsByAuction({})
+      setAuctionCompletesByAuction({})
       return
     }
 
@@ -504,41 +830,55 @@ export function ListingDetailPage({
     const auctionAnchors = auctions.map(auction => auction.auctionAnchor)
 
     for (const auction of auctions) {
-      void marketplaceRuntime.auctions.bidGroups.fetch({ auctionAnchor: auction.auctionAnchor, limit: 100 })
-        .then(groups => {
+      const scope = marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 })
+      function applySnapshot(snapshot: marketplaceSdk.MarketplaceAuctionScopeSnapshot) {
+        setBidGroupsByAuction(current => ({
+          ...current,
+          [auction.auctionAnchor]: sortBidGroups(snapshot.bidGroups),
+        }))
+        setAuctionCompletesByAuction(current => {
+          const next = { ...current }
+          if (snapshot.complete) next[auction.auctionAnchor] = snapshot.complete
+          else delete next[auction.auctionAnchor]
+          return next
+        })
+      }
+
+      void scope.query({ maxWait: 2500 })
+        .then(snapshot => {
           if (!closed) {
-            setBidGroupsByAuction(current => ({
-              ...current,
-              [auction.auctionAnchor]: sortBidGroups(groups),
-            }))
+            applySnapshot(snapshot)
           }
         })
         .catch(err => {
-          console.warn('[marketplace-app] unable to fetch auction bid groups', {
+          console.warn('[marketplace-app] unable to query auction scope', {
             auctionAnchor: auction.auctionAnchor,
           }, err)
-        })
+      })
 
       try {
-        closers.push(marketplaceRuntime.auctions.bidGroups.subscribe(
-          { auctionAnchor: auction.auctionAnchor, limit: 100 },
-          {
-            ongroups(groups) {
-              if (!closed) {
-                setBidGroupsByAuction(current => ({
-                  ...current,
-                  [auction.auctionAnchor]: sortBidGroups(groups),
-                }))
-              }
-            },
-            oninvalid(event, error) {
-              console.warn('[marketplace-app] ignoring invalid auction bid group event', { eventId: event.id }, error)
-            },
+        const stream = scope.stream({ label: `auction-scope:${auction.auctionAnchor}`, maxWait: 2500 })
+        const snapshotSubscription = stream.snapshot.subscribe(snapshot => {
+          if (!closed) {
+            applySnapshot(snapshot)
+          }
+        })
+        const statusSubscription = stream.status.subscribe(status => {
+          if (status instanceof marketplaceSdk.StreamError) {
+            console.warn('[marketplace-app] ignoring invalid auction scope event', {
+              auctionAnchor: auction.auctionAnchor,
+            }, status.error)
+          }
+        })
+        closers.push({
+          close(reason?: string) {
+            snapshotSubscription.unsubscribe()
+            statusSubscription.unsubscribe()
+            stream.close(reason)
           },
-          { label: `auction-bids:${auction.auctionAnchor}` },
-        ))
+        })
       } catch (err) {
-        console.warn('[marketplace-app] unable to subscribe to auction bid groups', {
+        console.warn('[marketplace-app] unable to subscribe to auction scope', {
           auctionAnchor: auction.auctionAnchor,
         }, err)
       }
@@ -550,25 +890,28 @@ export function ListingDetailPage({
       setBidGroupsByAuction(current => Object.fromEntries(
         Object.entries(current).filter(([anchor]) => auctionAnchors.includes(anchor)),
       ))
+      setAuctionCompletesByAuction(current => Object.fromEntries(
+        Object.entries(current).filter(([anchor]) => auctionAnchors.includes(anchor)),
+      ))
     }
-  }, [auctions, marketplaceRuntime])
+  }, [auctions, marketplace])
 
-  const selectedEscrow = useMemo(
-    () => escrowChoices.find(choice => choice.pubkey === selectedEscrowPubkey),
-    [escrowChoices, selectedEscrowPubkey],
+  const selectedArbiter = useMemo(
+    () => arbiterChoices.find(choice => choice.pubkey === selectedArbiterPubkey),
+    [arbiterChoices, selectedArbiterPubkey],
   )
   const selectedService = useMemo(
-    () => selectedEscrow?.services.find(service => service.key === selectedServiceKey),
-    [selectedEscrow, selectedServiceKey],
+    () => selectedArbiter?.services.find(service => service.key === selectedServiceKey),
+    [selectedArbiter, selectedServiceKey],
   )
   const selectedRoute = selectedService?.route
-  const selectedAuctionEscrow = useMemo(
-    () => auctionEscrowChoices.find(choice => choice.pubkey === selectedAuctionEscrowPubkey),
-    [auctionEscrowChoices, selectedAuctionEscrowPubkey],
+  const selectedAuctionArbiter = useMemo(
+    () => auctionArbiterChoices.find(choice => choice.pubkey === selectedAuctionArbiterPubkey),
+    [auctionArbiterChoices, selectedAuctionArbiterPubkey],
   )
   const selectedAuctionService = useMemo(
-    () => selectedAuctionEscrow?.services.find(service => service.key === selectedAuctionServiceKey),
-    [selectedAuctionEscrow, selectedAuctionServiceKey],
+    () => selectedAuctionArbiter?.services.find(service => service.key === selectedAuctionServiceKey),
+    [selectedAuctionArbiter, selectedAuctionServiceKey],
   )
   const selectedAuctionRoute = selectedAuctionService?.route
   const bidAuction = useMemo(
@@ -578,10 +921,164 @@ export function ListingDetailPage({
     ),
     [auctions, bidAuctionAnchor, bidAuctionSnapshot],
   )
+  const bidAuctionChains = useMemo(
+    () => bidAuction ? (bidChainsByAuction[bidAuction.auctionAnchor] ?? []) : [],
+    [bidAuction, bidChainsByAuction],
+  )
+  const bidPreviousChain = useMemo(
+    () => bidPreviousChainSnapshot
+      ? bidAuctionChains.find(chain => chain.id === bidPreviousChainSnapshot.id) ?? bidPreviousChainSnapshot
+      : undefined,
+    [bidAuctionChains, bidPreviousChainSnapshot],
+  )
+  const bidAddUnits = useMemo(() => {
+    if (!bidAuction || !bidAmount) return 0n
+    try {
+      return decimalToUnits(bidAmount, bidAuction.decimals)
+    } catch {
+      return 0n
+    }
+  }, [bidAmount, bidAuction])
+  const bidPreviousTotalUnits = bidPreviousChain ? bidChainUnits(bidPreviousChain) : 0n
+  const bidNewTotalUnits = bidPreviousTotalUnits + bidAddUnits
+  const auctionAmountDecimals = useMemo(
+    () => auctionRouteAmountDecimals(auctionCurrency, selectedAuctionRoute?.asset),
+    [auctionCurrency, selectedAuctionRoute],
+  )
+  const auctionMinimum = useMemo(
+    () => minimumAmountLimits(auctionCurrency, auctionAmountDecimals),
+    [auctionAmountDecimals, auctionCurrency],
+  )
+  const auctionStartingBidMinimum = useMemo(
+    () => auctionCurrency && auctionAmountDecimals !== undefined
+      ? [{ value: '0', denomination: auctionCurrency, decimals: auctionAmountDecimals }]
+      : undefined,
+    [auctionAmountDecimals, auctionCurrency],
+  )
+  const auctionStartingBidValidation = useMemo<CurrencyAmountValidation>(
+    () => validateCurrencyAmountInput(auctionStartingBid, {
+      decimals: auctionAmountDecimals,
+      denomination: auctionCurrency,
+      min: auctionStartingBidMinimum,
+    }),
+    [auctionAmountDecimals, auctionCurrency, auctionStartingBid, auctionStartingBidMinimum],
+  )
+  const auctionMinIncrementValidation = useMemo<CurrencyAmountValidation>(
+    () => validateCurrencyAmountInput(auctionMinIncrement, {
+      decimals: auctionAmountDecimals,
+      denomination: auctionCurrency,
+      min: auctionMinimum,
+    }),
+    [auctionAmountDecimals, auctionCurrency, auctionMinIncrement, auctionMinimum],
+  )
+  const auctionReserveValidation = useMemo<CurrencyAmountValidation>(
+    () => validateCurrencyAmountInput(auctionReserve, {
+      decimals: auctionAmountDecimals,
+      denomination: auctionCurrency,
+      min: auctionMinimum,
+    }),
+    [auctionAmountDecimals, auctionCurrency, auctionMinimum, auctionReserve],
+  )
+  const auctionAmountsValid = (
+    auctionStartingBidValidation.valid &&
+    auctionMinIncrementValidation.valid &&
+    auctionReserveValidation.valid
+  )
+  const bidMinimumAddUnits = useMemo(() => {
+    if (!bidAuction) return 1n
+    const minimumTotal = minimumNextBidUnits(bidAuction, bidAuctionChains)
+    const needed = minimumTotal - bidPreviousTotalUnits
+    return needed > 1n ? needed : 1n
+  }, [bidAuction, bidAuctionChains, bidPreviousTotalUnits])
+  const bidMinimum = useMemo(
+    () => bidAuction
+      ? [{ value: bidMinimumAddUnits.toString(), denomination: bidAuction.currency, decimals: bidAuction.decimals }]
+      : undefined,
+    [bidAuction, bidMinimumAddUnits],
+  )
+  const bidAmountValidation = useMemo<CurrencyAmountValidation>(
+    () => bidAuction
+      ? validateCurrencyAmountInput(bidAmount, {
+          decimals: bidAuction.decimals,
+          denomination: bidAuction.currency,
+          min: bidMinimum,
+          required: true,
+        })
+      : { valid: true },
+    [bidAmount, bidAuction, bidMinimum],
+  )
+  const bidRouteAmount = useMemo<marketplaceSdk.MarketplaceAmount | undefined>(() => {
+    if (!bidAuction) return undefined
+    try {
+      const units = bidAmount ? decimalToUnits(bidAmount, bidAuction.decimals) : bidMinimumAddUnits
+      return {
+        value: (units > 0n ? units : bidMinimumAddUnits).toString(),
+        denomination: bidAuction.currency,
+        decimals: bidAuction.decimals,
+      }
+    } catch {
+      return {
+        value: bidMinimumAddUnits.toString(),
+        denomination: bidAuction.currency,
+        decimals: bidAuction.decimals,
+      }
+    }
+  }, [bidAmount, bidAuction, bidMinimumAddUnits])
 
   useEffect(() => {
-    if (auctionModalOpen && auctionCurrency) void loadAuctionEscrowChoices(auctionCurrency)
+    if (auctionModalOpen && auctionCurrency) void loadAuctionArbiterChoices(auctionCurrency)
   }, [auctionCurrency, auctionModalOpen, listing, marketplaceState])
+
+  useEffect(() => {
+    if (!bidAuction || !listing || !marketplaceSession || !bidRouteAmount) {
+      setSelectedBidRoute(undefined)
+      setBidRouteLoading(false)
+      setBidRouteError(undefined)
+      setBidArbiterProfile(undefined)
+      return
+    }
+
+    let closed = false
+    setBidRouteLoading(true)
+    setBidRouteError(undefined)
+    void (async () => {
+      try {
+        const route = await resolveBidPaymentRoute(bidAuction, bidRouteAmount)
+        if (closed) return
+        setSelectedBidRoute(route)
+        if (!route) {
+          setBidRouteError(`No supported ${bidAuction.currency} bid payment route for this auction arbiter`)
+        }
+        if (session) {
+          try {
+            const profiles = await fetchProfiles(session, [bidAuction.arbiterPubkey])
+            if (!closed) setBidArbiterProfile(profiles.get(bidAuction.arbiterPubkey))
+          } catch (err) {
+            console.warn('[marketplace-app] unable to fetch bid arbiter profile', {
+              arbiterPubkey: bidAuction.arbiterPubkey,
+            }, err)
+            if (!closed) setBidArbiterProfile(undefined)
+          }
+        }
+      } catch (err) {
+        if (!closed) {
+          setSelectedBidRoute(undefined)
+          setBidRouteError(readableError(err, 'Unable to load bid payment route'))
+        }
+      } finally {
+        if (!closed) setBidRouteLoading(false)
+      }
+    })()
+    return () => {
+      closed = true
+    }
+  }, [
+    bidAuction,
+    bidRouteAmount,
+    listing,
+    marketplaceSession,
+    session,
+  ])
 
   function requireCheckoutDates(): boolean {
     if (price?.frequency && (!start || !end)) {
@@ -596,186 +1093,146 @@ export function ListingDetailPage({
     return true
   }
 
-  async function nextTrade() {
-    if (!listing || !marketplaceState) throw new Error('Marketplace runtime is not ready yet')
-    const tradeIndex = await marketplaceState.runtime.getNextAccountIndex()
-    const anchor = listingAnchor(listing.event)
-    const tradeId = `${anchor}:negotiation:${tradeIndex}`
-    console.debug('[marketplace-app] derived next trade material', {
-      listingId: listing.event.id,
-      tradeIndex,
-      tradeId,
-    })
-    return { tradeIndex, anchor, tradeId }
-  }
-
-  function selectEscrow(pubkey: string, choices = escrowChoices) {
+  function selectArbiter(pubkey: string, choices = arbiterChoices) {
     const choice = choices.find(item => item.pubkey === pubkey)
     const firstUsableService = choice?.services.find(service => service.route)
-    setSelectedEscrowPubkey(pubkey)
+    setSelectedArbiterPubkey(pubkey)
     setSelectedServiceKey(firstUsableService?.key ?? '')
   }
 
-  function selectAuctionEscrow(pubkey: string, choices = auctionEscrowChoices) {
+  function selectAuctionArbiter(pubkey: string, choices = auctionArbiterChoices) {
     const choice = choices.find(item => item.pubkey === pubkey)
     const firstUsableService = choice?.services.find(service => service.route)
-    setSelectedAuctionEscrowPubkey(pubkey)
+    setSelectedAuctionArbiterPubkey(pubkey)
     setSelectedAuctionServiceKey(firstUsableService?.key ?? '')
   }
 
-  async function loadEscrowChoices() {
-    if (!listing || !price || !marketplaceState) return
+  async function resolveBidPaymentRoute(
+    auction: marketplaceSdk.ParsedMarketplaceAuction,
+    amount: marketplaceSdk.MarketplaceAmount,
+  ): Promise<marketplaceSdk.MarketplacePaymentRoute | undefined> {
+    if (!listing || !marketplaceSession) return undefined
+    const bidRoutes = await marketplaceSession.paymentRoutes.forListing(listing, {
+      amount,
+      purpose: 'bid',
+    })
+    const route = bidRoutes.find(candidate => bidRouteMatchesAuction(candidate, auction))
+    if (!route) {
+      console.warn('[marketplace-app] no matching auction bid route', {
+        auctionAnchor: auction.auctionAnchor,
+        arbiterPubkey: auction.arbiterPubkey,
+        currency: auction.currency,
+        decimals: auction.decimals,
+        routes: bidRoutes.map(candidate => ({
+          arbiterPubkey: candidate.arbitrationService.event.pubkey,
+          service: candidate.arbitrationService.d,
+          assetId: candidate.asset.assetId,
+          denomination: candidate.asset.denomination,
+          decimals: candidate.asset.decimals,
+          policyType: candidate.descriptor.type,
+          policyHash: candidate.descriptor.hash,
+        })),
+      })
+    }
+    return route
+  }
+
+  async function loadArbiterChoices() {
+    if (!listing || !price || !marketplaceSession) return
     if (!session) {
-      onLoginRequired('Sign in to choose escrow and checkout')
+      onLoginRequired('Sign in to choose arbiter and checkout')
       return
     }
-    setEscrowPickerLoading(true)
-    setEscrowPickerError(undefined)
+    setArbiterPickerLoading(true)
+    setArbiterPickerError(undefined)
     try {
-      console.debug('[marketplace-app] loading checkout escrow choices', {
+      console.debug('[marketplace-app] loading checkout arbiter choices', {
         listingId: listing.event.id,
         sellerPubkey: listing.event.pubkey,
         denomination: price.currency,
       })
-      const method = await marketplaceState.runtime.paymentMethod.findOne({
-        author: listing.event.pubkey,
-        limit: 5,
+      const amount = marketplaceSession.listings.price(listing, { start, end })
+      const routes = await marketplaceSession.paymentRoutes.forListing(listing, {
+        amount,
+        purpose: 'order',
       })
-      if (!method) {
-        setEscrowChoices([])
-        setSelectedEscrowPubkey('')
+      if (routes.length === 0) {
+        setArbiterChoices([])
+        setSelectedArbiterPubkey('')
         setSelectedServiceKey('')
-        setEscrowPickerError('The seller has not published any payment methods')
-        console.warn('[marketplace-app] checkout seller has no payment method', {
+        setArbiterPickerError(`No supported ${price.currency} marketplace payment route`)
+        console.warn('[marketplace-app] checkout has no supported payment routes', {
           listingId: listing.event.id,
           sellerPubkey: listing.event.pubkey,
+          amount,
         })
         return
       }
 
-      const trustedEscrows = [...new Set(method.trustedEscrowPubkeys)]
-      const [profiles, routes, servicesByEscrow] = await Promise.all([
-        fetchProfiles(session, trustedEscrows),
-        marketplaceState.runtime.paymentRoutes.forListing(listing, routeProbeFor(listing, price)),
-        Promise.all(trustedEscrows.map(async pubkey => ({
-          pubkey,
-          services: await marketplaceState.runtime.escrowServices.search({ author: pubkey, limit: 20 }),
-        }))),
-      ])
+      const arbiterPubkeys = [...new Set(routes.map(route => route.arbitrationService.event.pubkey))]
+      const profiles = await fetchProfiles(session, arbiterPubkeys)
+      const choices = arbiterChoicesForRoutes(routes, profiles)
 
-      const choices: EscrowChoice[] = trustedEscrows.map(pubkey => {
-        const services = servicesByEscrow.find(entry => entry.pubkey === pubkey)?.services ?? []
-        const serviceChoices: EscrowServiceChoice[] = services.map(service => {
-          const route = routeForService(service, routes)
-          return {
-            key: serviceChoiceKey(service),
-            service,
-            ...(route ? { route } : { disabledReason: `No supported ${price.currency} route` }),
-          }
-        })
-        return {
-          pubkey,
-          profile: profiles.get(pubkey),
-          services: serviceChoices,
-          ...(serviceChoices.some(service => service.route)
-            ? {}
-            : {
-                disabledReason: serviceChoices.length === 0
-                  ? 'No arbitration services published'
-                  : `No usable ${price.currency} arbitration service`,
-              }),
-        }
-      })
-
-      setEscrowChoices(choices)
-      const firstUsableEscrow = choices.find(choice => choice.services.some(service => service.route))
-      if (firstUsableEscrow) {
-        selectEscrow(firstUsableEscrow.pubkey, choices)
+      setArbiterChoices(choices)
+      const firstUsableArbiter = choices.find(choice => choice.services.some(service => service.route))
+      if (firstUsableArbiter) {
+        selectArbiter(firstUsableArbiter.pubkey, choices)
       } else {
-        setSelectedEscrowPubkey('')
+        setSelectedArbiterPubkey('')
         setSelectedServiceKey('')
       }
-      console.debug('[marketplace-app] loaded checkout escrow choices', {
+      console.debug('[marketplace-app] loaded checkout arbiter choices', {
         listingId: listing.event.id,
-        escrowCount: choices.length,
+        arbiterCount: choices.length,
         serviceCount: choices.reduce((sum, choice) => sum + choice.services.length, 0),
         usableRouteCount: routes.length,
       })
     } catch (err) {
-      console.warn('[marketplace-app] unable to load checkout escrow choices', err)
-      setEscrowPickerError(err instanceof Error ? err.message : 'Unable to load escrow choices')
+      console.warn('[marketplace-app] unable to load checkout arbiter choices', err)
+      setArbiterPickerError(err instanceof Error ? err.message : 'Unable to load arbiter choices')
     } finally {
-      setEscrowPickerLoading(false)
+      setArbiterPickerLoading(false)
     }
   }
 
-  async function loadAuctionEscrowChoices(currency = auctionCurrency) {
-    if (!listing || !marketplaceState || !currency) return
+  async function loadAuctionArbiterChoices(currency = auctionCurrency) {
+    if (!listing || !marketplaceSession || !currency) return
     if (!session) {
       onLoginRequired('Sign in to create auctions')
       return
     }
-    setAuctionEscrowLoading(true)
-    setAuctionEscrowError(undefined)
+    setAuctionArbiterLoading(true)
+    setAuctionArbiterError(undefined)
     try {
-      const method = await marketplaceState.runtime.paymentMethod.findOne({
-        author: listing.event.pubkey,
-        limit: 5,
+      const amount = routeAmountForCurrency(currency)
+      const routes = await marketplaceSession.paymentRoutes.forListing(listing, {
+        amount,
+        purpose: 'bid',
       })
-      if (!method) {
-        setAuctionEscrowChoices([])
-        setSelectedAuctionEscrowPubkey('')
+      if (routes.length === 0) {
+        setAuctionArbiterChoices([])
+        setSelectedAuctionArbiterPubkey('')
         setSelectedAuctionServiceKey('')
-        setAuctionEscrowError('The seller has not published any payment methods')
+        setAuctionArbiterError(`No supported ${currency} auction payment route`)
         return
       }
 
-      const trustedEscrows = [...new Set(method.trustedEscrowPubkeys)]
-      const [profiles, routes, servicesByEscrow] = await Promise.all([
-        fetchProfiles(session, trustedEscrows),
-        marketplaceState.runtime.auctions.paymentRoutes.forListing(listing, routeProbeForCurrency(listing, currency)),
-        Promise.all(trustedEscrows.map(async pubkey => ({
-          pubkey,
-          services: await marketplaceState.runtime.escrowServices.search({ author: pubkey, limit: 20 }),
-        }))),
-      ])
+      const arbiterPubkeys = [...new Set(routes.map(route => route.arbitrationService.event.pubkey))]
+      const profiles = await fetchProfiles(session, arbiterPubkeys)
+      const choices = arbiterChoicesForRoutes(routes, profiles)
 
-      const choices: EscrowChoice[] = trustedEscrows.map(pubkey => {
-        const services = servicesByEscrow.find(entry => entry.pubkey === pubkey)?.services ?? []
-        const serviceChoices: EscrowServiceChoice[] = services.map(service => {
-          const route = routeForService(service, routes)
-          return {
-            key: serviceChoiceKey(service),
-            service,
-            ...(route ? { route } : { disabledReason: `No supported ${currency} auction route` }),
-          }
-        })
-        return {
-          pubkey,
-          profile: profiles.get(pubkey),
-          services: serviceChoices,
-          ...(serviceChoices.some(service => service.route)
-            ? {}
-            : {
-                disabledReason: serviceChoices.length === 0
-                  ? 'No arbitration services published'
-                  : `No usable ${currency} auction service`,
-              }),
-        }
-      })
-
-      setAuctionEscrowChoices(choices)
-      const firstUsableEscrow = choices.find(choice => choice.services.some(service => service.route))
-      if (firstUsableEscrow) selectAuctionEscrow(firstUsableEscrow.pubkey, choices)
+      setAuctionArbiterChoices(choices)
+      const firstUsableArbiter = choices.find(choice => choice.services.some(service => service.route))
+      if (firstUsableArbiter) selectAuctionArbiter(firstUsableArbiter.pubkey, choices)
       else {
-        setSelectedAuctionEscrowPubkey('')
+        setSelectedAuctionArbiterPubkey('')
         setSelectedAuctionServiceKey('')
       }
     } catch (err) {
-      console.warn('[marketplace-app] unable to load auction escrow choices', err)
-      setAuctionEscrowError(err instanceof Error ? err.message : 'Unable to load auction escrow choices')
+      console.warn('[marketplace-app] unable to load auction arbiter choices', err)
+      setAuctionArbiterError(err instanceof Error ? err.message : 'Unable to load auction arbiter choices')
     } finally {
-      setAuctionEscrowLoading(false)
+      setAuctionArbiterLoading(false)
     }
   }
 
@@ -791,7 +1248,13 @@ export function ListingDetailPage({
     setAuctionStart(auctionStart || dateTimeLocalFromSeconds(now + 3600))
     setAuctionEnd(auctionEnd || dateTimeLocalFromSeconds(now + 86_400))
     setAuctionModalOpen(true)
-    void loadAuctionEscrowChoices(auctionCurrency || availableAuctionCurrencies[0] || price?.currency || '')
+    void loadAuctionArbiterChoices(auctionCurrency || availableAuctionCurrencies[0] || price?.currency || '')
+  }
+
+  function openNegotiateDialog() {
+    if (!listing?.negotiable || !price) return
+    if (!offerTouched) setOfferAmount(total ?? '')
+    setNegotiateOpen(true)
   }
 
   async function createAuction() {
@@ -800,11 +1263,22 @@ export function ListingDetailPage({
       return
     }
     if (!listing || !selectedAuctionRoute || !listingAnchorValue) {
-      onError('Choose a usable auction escrow service')
+      onError('Choose a usable auction arbitration service')
+      return
+    }
+    const invalidAuctionAmount = [
+      auctionStartingBidValidation,
+      auctionMinIncrementValidation,
+      auctionReserveValidation,
+    ].find(validation => !validation.valid)
+    if (invalidAuctionAmount) {
+      const message = invalidAuctionAmount.error ?? 'Enter valid auction amounts'
+      setAuctionArbiterError(message)
+      onError(message)
       return
     }
     setAuctionPublishing(true)
-    setAuctionEscrowError(undefined)
+    setAuctionArbiterError(undefined)
     try {
       const startAt = secondsFromDateTimeLocal(auctionStart, 'auction start')
       const endAt = secondsFromDateTimeLocal(auctionEnd, 'auction end')
@@ -823,7 +1297,7 @@ export function ListingDetailPage({
       const template = marketplace.auctions.template({
         d: `${listing.d}-auction-${Date.now()}`,
         listingAnchor: listingAnchorValue,
-        arbiterPubkey: selectedAuctionRoute.escrowService.event.pubkey,
+        arbiterPubkey: selectedAuctionRoute.arbitrationService.event.pubkey,
         currency: startingBid.denomination,
         decimals: startingBid.decimals,
         startAt,
@@ -838,7 +1312,7 @@ export function ListingDetailPage({
             method: selectedAuctionRoute.policy.method,
             policyId: selectedAuctionRoute.descriptor.id,
             assetId: selectedAuctionRoute.asset.assetId,
-            escrowServiceId: selectedAuctionRoute.escrowService.event.id,
+            arbitrationServiceId: selectedAuctionRoute.arbitrationService.event.id,
           },
         },
       })
@@ -851,31 +1325,47 @@ export function ListingDetailPage({
     } catch (err) {
       console.warn('[marketplace-app] unable to create auction', err)
       const message = err instanceof Error ? err.message : 'Unable to create auction'
-      setAuctionEscrowError(message)
+      setAuctionArbiterError(message)
       onError(message)
     } finally {
       setAuctionPublishing(false)
     }
   }
 
-  function openBidModal(auction: marketplace.ParsedMarketplaceAuction) {
-    const groups = bidGroupsByAuction[auction.auctionAnchor] ?? []
+  function openBidModal(auction: marketplaceSdk.ParsedMarketplaceAuction) {
+    const chains = bidChainsByAuction[auction.auctionAnchor] ?? []
+    const previousChain = latestOwnBidChain(chains, session?.pubkey, localAuctionBidPubkeys)
     setBidAuctionAnchor(auction.auctionAnchor)
     setBidAuctionSnapshot(auction)
-    setBidAmount(defaultBidAmount(auction, groups))
+    setBidPreviousChainSnapshot(previousChain)
+    setBidAmount(defaultBidAddAmount(auction, chains, previousChain))
     setBidInvoice(undefined)
-    setBidMessages([])
+    setBidInvoiceActive(false)
+    setBidProgressMessage('Creating the funded bid with the selected auction arbiter.')
     setBidFlowStatus('idle')
     setBidFlowError(undefined)
+    setBidPublic(DEFAULT_BID_PUBLIC)
+    setBidPaymentPrivate(false)
+    setSelectedBidRoute(undefined)
+    setBidRouteLoading(true)
+    setBidRouteError(undefined)
+    setBidArbiterProfile(undefined)
   }
 
   function closeBidModal() {
     setBidAuctionAnchor('')
     setBidAuctionSnapshot(undefined)
+    setBidPreviousChainSnapshot(undefined)
+    setBidPublic(DEFAULT_BID_PUBLIC)
+    setBidPaymentPrivate(false)
+    setSelectedBidRoute(undefined)
+    setBidRouteLoading(false)
+    setBidRouteError(undefined)
+    setBidArbiterProfile(undefined)
   }
 
   async function submitBid() {
-    if (!session || !marketplaceState) {
+    if (!session || !marketplaceSession) {
       onLoginRequired('Sign in to place auction bids')
       return
     }
@@ -887,77 +1377,109 @@ export function ListingDetailPage({
       onError(message)
       return
     }
+    if (!bidAmountValidation.valid) {
+      const message = bidAmountValidation.error ?? 'Enter a valid bid amount'
+      setBidFlowStatus('error')
+      setBidFlowError(message)
+      onError(message)
+      return
+    }
     setBidPublishing(true)
     setBidInvoice(undefined)
-    setBidMessages([])
+    setBidInvoiceActive(false)
+    setBidProgressMessage('Creating the funded bid with the selected auction arbiter.')
     setBidFlowStatus('working')
     setBidFlowError(undefined)
     try {
-      const value = decimalToUnits(bidAmount, bidAuction.decimals).toString()
-      const amount: marketplace.MarketplaceAmount = {
-        value,
+      const addUnits = decimalToUnits(bidAmount, bidAuction.decimals)
+      if (addUnits <= 0n) throw new Error('Bid amount must be greater than zero')
+      const chains = bidChainsByAuction[bidAuction.auctionAnchor] ?? []
+      const previousChain = bidPreviousChain
+      const previousTotal = previousChain ? bidChainUnits(previousChain) : 0n
+      const chainTotal = previousTotal + addUnits
+      const minimumTotal = minimumNextBidUnits(bidAuction, chains)
+      if (chainTotal < minimumTotal) {
+        throw new Error(`Bid chain total must be at least ${formatDenominatedUnits(minimumTotal, bidAuction.decimals, bidAuction.currency)}`)
+      }
+      const amount: marketplaceSdk.MarketplaceAmount = {
+        value: addUnits.toString(),
         denomination: bidAuction.currency,
         decimals: bidAuction.decimals,
       }
-      const tradeIndex = await marketplaceState.runtime.getNextAccountIndex()
-      const states = marketplaceState.runtime.auctions.bid(listing, {
+      const chainTotalAmount: marketplaceSdk.MarketplaceAmount = {
+        value: chainTotal.toString(),
+        denomination: bidAuction.currency,
+        decimals: bidAuction.decimals,
+      }
+      const bidRoute = selectedBidRoute ?? await resolveBidPaymentRoute(bidAuction, amount)
+      if (!bidRoute) {
+        throw new Error(`No supported ${bidAuction.currency} bid payment route for this auction arbiter`)
+      }
+      setSelectedBidRoute(bidRoute)
+      const states = marketplaceSession.auctions.bid(listing, {
         auctionAnchor: bidAuction.auctionAnchor,
         listingAnchor: listingAnchorValue,
         amount,
+        data: {
+          bidChainTotal: chainTotalAmount,
+          ...(previousChain ? {
+            previousBidId: previousChain.head.bid.event.id,
+            previousBidChainId: previousChain.id,
+            previousBidAmount: previousChain.amount,
+            bidIncrement: amount,
+          } : {}),
+        },
+        ...(previousChain ? {
+          extraTags: [
+            ['prev_bid', previousChain.head.bid.event.id],
+            ['e', previousChain.head.bid.event.id, '', 'prev_bid'],
+            ['prev_amount', previousChain.amount.value, previousChain.amount.denomination, previousChain.amount.decimals.toString()],
+            ['delta_amount', amount.value, amount.denomination, amount.decimals.toString()],
+            ['chain_amount', chainTotalAmount.value, chainTotalAmount.denomination, chainTotalAmount.decimals.toString()],
+          ],
+        } : {
+          extraTags: [
+            ['chain_amount', chainTotalAmount.value, chainTotalAmount.denomination, chainTotalAmount.decimals.toString()],
+          ],
+        }),
         targetOrder: {
           listingAnchor: listingAnchorValue,
           start: start || undefined,
           end: end || undefined,
-          amount,
+          amount: chainTotalAmount,
         },
       }, {
         auction: bidAuction.event,
-        accountIndex: tradeIndex,
+        route: bidRoute,
+        identityProof: bidPublic ? 'public' : 'none',
+        paymentProofPrivacy: bidPaymentPrivate ? 'sealed' : 'public',
       })
 
       for await (const state of states) {
-        setBidMessages(messages => [
-          ...messages,
-          stringifyProgress({
-            at: new Date().toISOString(),
-            type: state.type,
-            status: 'status' in state ? state.status : undefined,
-            request: 'request' in state
-              ? {
-                  type: state.request.type,
-                  amount: state.request.amount,
-                  description: state.request.description,
-                  data: state.request.data,
-                }
-              : undefined,
-            data: state.data,
-            eventId: 'event' in state ? state.event.id : undefined,
-          }),
-        ])
         if (state.type === 'payment_required' && state.request.type === 'bolt11') {
           setBidInvoice(state.request.bolt11)
+          setBidInvoiceActive(true)
+          setBidProgressMessage('Waiting for the external invoice payment to complete.')
+        }
+        if (state.type === 'payment_progress') {
+          setBidProgressMessage(state.status)
+        }
+        if (state.type === 'bid_published') {
+          setBidProgressMessage('Publishing bid payment proof.')
         }
         if (state.type === 'payment_published') {
+          setBidInvoiceActive(false)
           setBidFlowStatus('success')
           onPublished()
         }
       }
-      onTradeIndexUsed(tradeIndex)
       setBidFlowStatus('success')
     } catch (err) {
       console.warn('[marketplace-app] unable to submit auction bid', err)
       const message = readableError(err, 'Unable to submit auction bid')
       setBidFlowStatus('error')
       setBidFlowError(message)
-      setBidMessages(messages => [
-        ...messages,
-        stringifyProgress({
-          at: new Date().toISOString(),
-          type: 'error',
-          status: 'error',
-          message,
-        }),
-      ])
+      setBidInvoiceActive(false)
       onError(message)
     } finally {
       setBidPublishing(false)
@@ -966,7 +1488,7 @@ export function ListingDetailPage({
 
   async function negotiate() {
     if (!listing || !price || !total) return
-    if (!session || !publisher || !marketplaceState) {
+    if (!session || !marketplaceSession) {
       onLoginRequired('Sign in to negotiate this listing')
       return
     }
@@ -978,30 +1500,32 @@ export function ListingDetailPage({
       return
     }
     if (!requireCheckoutDates()) return
+    if (!offerAmountValidation.valid) {
+      onError(offerAmountValidation.error ?? 'Enter a valid offer amount')
+      return
+    }
     setPublishing(true)
     setInvoice(undefined)
-    setPaymentMessages([])
+    setCheckoutInvoiceActive(false)
+    setCheckoutProgressMessage('Creating the order payment with the selected arbitration route.')
     try {
-      const { tradeIndex, tradeId } = await nextTrade()
       console.debug('[marketplace-app] publishing negotiation offer', {
         listingId: listing.event.id,
-        tradeIndex,
-        tradeId,
         denomination: price.currency,
         amount: offerAmount || total,
       })
-      await publishNegotiationOffer(session, publisher, listing, {
-        tradeId,
+      const result = await marketplaceSession.orders.negotiate(listing, {
         start: start || undefined,
         end: end || undefined,
         amount: amountForNegotiation(offerAmount || total, price.currency),
       })
-      onTradeIndexUsed(tradeIndex)
+      if (result.accountIndex !== undefined) onTradeIndexUsed(result.accountIndex)
       onPublished()
+      setNegotiateOpen(false)
       console.debug('[marketplace-app] negotiation offer published', {
         listingId: listing.event.id,
-        tradeIndex,
-        tradeId,
+        tradeIndex: result.accountIndex,
+        tradeId: result.tradeId,
       })
     } catch (err) {
       console.warn('[marketplace-app] unable to send negotiation offer', err)
@@ -1021,42 +1545,35 @@ export function ListingDetailPage({
       return
     }
     if (!requireCheckoutDates()) return
-    if (offerIsBelowTotal) {
-      console.debug('[marketplace-app] checkout amount is below total; starting negotiation flow', {
-        listingId: listing.event.id,
-        offerAmount,
-        total,
-      })
-      await negotiate()
-      return
-    }
     setInvoice(undefined)
-    setPaymentMessages([])
+    setCheckoutInvoiceActive(false)
+    setCheckoutProgressMessage('Creating the order payment with the selected arbitration route.')
     setCheckoutFlowStatus('idle')
     setCheckoutFlowError(undefined)
+    setCheckoutPublic(DEFAULT_CHECKOUT_PUBLIC)
+    setCheckoutPaymentPrivate(false)
     setCheckoutPaymentOpen(false)
-    setEscrowPickerOpen(true)
-    await loadEscrowChoices()
+    setArbiterPickerOpen(true)
+    await loadArbiterChoices()
   }
 
-  async function checkoutWithRoute(route: marketplace.MarketplacePaymentRoute) {
+  async function checkoutWithRoute(route: marketplaceSdk.MarketplacePaymentRoute) {
     if (!listing || !price || total === undefined) return
-    if (!session || !marketplaceState) {
+    if (!session || !marketplaceSession) {
       onLoginRequired('Sign in to checkout')
       return
     }
     setPublishing(true)
     setInvoice(undefined)
-    setPaymentMessages([])
+    setCheckoutInvoiceActive(false)
+    setCheckoutProgressMessage('Creating the order payment with the selected arbitration route.')
     setCheckoutFlowStatus('working')
     setCheckoutFlowError(undefined)
     setCheckoutPaymentOpen(true)
-    setEscrowPickerOpen(false)
+    setArbiterPickerOpen(false)
     try {
-      const tradeIndex = await marketplaceState.runtime.getNextAccountIndex()
       console.debug('[marketplace-app] starting checkout', {
         listingId: listing.event.id,
-        tradeIndex,
         denomination: price.currency,
         total,
       })
@@ -1068,11 +1585,7 @@ export function ListingDetailPage({
         decimals: route.asset.decimals,
         policyId: route.descriptor.id,
       })
-      const paymentAmount = amountForPrice(
-        price.amount,
-        price.currency,
-        frequencyMultiplier(price.frequency, start, end),
-      )
+      const paymentAmount = marketplaceSession.listings.price(listing, { start, end })
       console.debug('[marketplace-app] checkout payment amount calculated', {
         listingId: listing.event.id,
         value: paymentAmount.value,
@@ -1080,13 +1593,14 @@ export function ListingDetailPage({
         decimals: paymentAmount.decimals,
       })
       let publishedOrderId: string | undefined
-      const paymentStates = marketplaceState.runtime.pay(listing, {
+      const paymentStates = marketplaceSession.pay(listing, {
         start: start || undefined,
         end: end || undefined,
         amount: paymentAmount,
       }, {
-        accountIndex: tradeIndex,
         route,
+        identityProof: checkoutPublic ? 'public' : 'none',
+        paymentProofPrivacy: checkoutPaymentPrivate ? 'sealed' : 'public',
       })
       for await (const paymentState of paymentStates) {
         console.debug('[marketplace-app] checkout payment state', {
@@ -1095,25 +1609,21 @@ export function ListingDetailPage({
           status: 'status' in paymentState ? paymentState.status : undefined,
           eventId: 'event' in paymentState ? paymentState.event.id : undefined,
         })
-        setPaymentMessages(messages => [
-          ...messages,
-          stringifyProgress({
-            at: new Date().toISOString(),
-            type: paymentState.type,
-            status: 'status' in paymentState ? paymentState.status : undefined,
-            request: 'request' in paymentState
-              ? {
-                  type: paymentState.request.type,
-                  amount: paymentState.request.amount,
-                  description: paymentState.request.description,
-                  data: paymentState.request.data,
-                }
-              : undefined,
-            data: paymentState.data,
-            eventId: 'event' in paymentState ? paymentState.event.id : undefined,
-          }),
-        ])
+        if (paymentState.type === 'payment_required' && paymentState.request.type === 'bolt11') {
+          console.debug('[marketplace-app] checkout requires external payment', {
+            listingId: listing.event.id,
+            requestType: paymentState.request.type,
+            amount: paymentState.request.amount,
+          })
+          setInvoice(paymentState.request.bolt11)
+          setCheckoutInvoiceActive(true)
+          setCheckoutProgressMessage('Waiting for the external invoice payment to complete.')
+        }
+        if (paymentState.type === 'payment_progress') {
+          setCheckoutProgressMessage(paymentState.status)
+        }
         if (paymentState.type === 'order_published') {
+          setCheckoutProgressMessage('Publishing order payment proof.')
           publishedOrderId = paymentState.event.id
           console.debug('[marketplace-app] checkout order published', {
             listingId: listing.event.id,
@@ -1123,6 +1633,7 @@ export function ListingDetailPage({
           })
         }
         if (paymentState.type === 'payment_published') {
+          setCheckoutInvoiceActive(false)
           setCheckoutFlowStatus('success')
           console.debug('[marketplace-app] checkout payment proof published', {
             listingId: listing.event.id,
@@ -1131,56 +1642,28 @@ export function ListingDetailPage({
             kind: paymentState.event.kind,
             pubkey: paymentState.event.pubkey,
           })
-          setPaymentMessages(messages => [
-            ...messages,
-            stringifyProgress({
-              at: new Date().toISOString(),
-              type: 'nostr_published',
-              eventId: publishedOrderId,
-              paymentEventId: paymentState.event.id,
-              kind: paymentState.event.kind,
-            }),
-          ])
           onPublished()
         }
-        if (paymentState.type === 'payment_required' && paymentState.request.type === 'bolt11') {
-          console.debug('[marketplace-app] checkout requires external payment', {
-            listingId: listing.event.id,
-            requestType: paymentState.request.type,
-            amount: paymentState.request.amount,
-          })
-          setInvoice(paymentState.request.bolt11)
-        }
       }
-      onTradeIndexUsed(tradeIndex)
       setCheckoutFlowStatus('success')
       console.debug('[marketplace-app] checkout payment stream completed', {
         listingId: listing.event.id,
-        tradeIndex,
       })
     } catch (err) {
       console.warn('[marketplace-app] checkout failed', err)
       const message = readableError(err, 'Unable to publish reservation offer')
       setCheckoutFlowStatus('error')
       setCheckoutFlowError(message)
-      setPaymentMessages(messages => [
-        ...messages,
-        stringifyProgress({
-          at: new Date().toISOString(),
-          type: 'error',
-          status: 'error',
-          message,
-        }),
-      ])
+      setCheckoutInvoiceActive(false)
       onError(message)
     } finally {
       setPublishing(false)
     }
   }
 
-  async function confirmEscrowSelection() {
+  async function confirmArbiterSelection() {
     if (!selectedRoute) {
-      onError('Choose a usable escrow and arbitration service')
+      onError('Choose a usable arbiter and arbitration service')
       return
     }
     await checkoutWithRoute(selectedRoute)
@@ -1188,660 +1671,746 @@ export function ListingDetailPage({
 
   if (!listing) {
     return (
-      <section className="page">
-        <h1>Listing not found</h1>
+      <section className="grid gap-4 p-7">
+        <h1 className="text-3xl font-medium leading-tight">Listing not found</h1>
       </section>
     )
   }
 
   const image = listing.images[0]?.url
   return (
-    <section className="detail-layout">
-      <div className="detail-main">
-        {image && <img className="detail-image" src={image} alt="" />}
-        <span className="label">{listing.location || 'Classified'}</span>
-        <h1>{listing.title}</h1>
-        <p className="lede">{listing.summary}</p>
-        <p>{listing.description}</p>
-        <section className="auction-section">
-          <div className="section-heading">
-            <div>
-              <span className="label">Auctions</span>
-              <h2>Listing auctions</h2>
-            </div>
-            {isSeller && (
-              <button
-                className="button secondary"
-                type="button"
-                disabled={!marketplaceState || auctionPublishing}
-                onClick={openAuctionModal}
-              >
-                Create auction
-              </button>
-            )}
-          </div>
-          {auctionLoading && <p className="muted">Loading auctions...</p>}
-          {auctionError && <p className="message-error">{auctionError}</p>}
-          {!auctionLoading && auctions.length === 0 && (
-            <p className="muted">No auctions attached to this listing.</p>
-          )}
-          {auctions.length > 0 && (
-            <div className="auction-list">
-              {auctions.map(auction => {
-	                const groups = bidGroupsByAuction[auction.auctionAnchor] ?? []
-	                const complete = auctionCompletesByAuction[auction.auctionAnchor]
-	                const highest = highestBidUnits(groups)
-	                const status = auctionDisplayStatus(auction, complete)
-	                const isLive = status === 'Live'
-	                return (
-                  <article className="auction-card" key={auction.auctionAnchor}>
-                    <div className="auction-card-heading">
-                      <div>
-                        <strong>{status}</strong>
-                        <span>{auction.currency} auction</span>
-                      </div>
-	                      <span className={`order-status ${complete ? 'commit' : ''}`}>
-	                        {complete ? status : `${groups.length} bid${groups.length === 1 ? '' : 's'}`}
-	                      </span>
-                    </div>
-                    <dl className="auction-facts">
-                      <div>
-                        <dt>Starts</dt>
-                        <dd>{formatDateTime(auction.startAt)}</dd>
-                      </div>
-                      <div>
-                        <dt>Ends</dt>
-                        <dd>{formatDateTime(auction.endAt)}</dd>
-                      </div>
-                      <div>
-                        <dt>Starting bid</dt>
-                        <dd>{formatUnits(safeUnits(auction.startingBid), auction.decimals)} {auction.currency}</dd>
-                      </div>
-                      <div>
-                        <dt>Highest bid</dt>
-                        <dd>{formatUnits(highest, auction.decimals)} {auction.currency}</dd>
-                      </div>
-                      <div>
-                        <dt>Arbiter</dt>
-                        <dd>{shortPubkey(auction.arbiterPubkey)}</dd>
-                      </div>
-                    </dl>
-	                    <div className="auction-actions">
-                      {!isSeller && (
-                        <button
-                          className="button"
-                          type="button"
-                          disabled={!isLive || bidPublishing}
-                          onClick={() => {
-                            if (!session) onLoginRequired('Sign in to place auction bids')
-                            else openBidModal(auction)
-                          }}
-                        >
-                          Place bid
-                        </button>
-                      )}
-	                      {isSeller && <span className="muted">Bids settle through {shortPubkey(auction.arbiterPubkey)}</span>}
-	                    </div>
-	                    {complete && (
-	                      <div className="auction-close-summary">
-	                        <strong>{auctionCompleteLabel(complete)}</strong>
-	                        <span>
-	                          {complete.finalAmount
-	                            ? `${formatUnits(safeUnits(complete.finalAmount.value), complete.finalAmount.decimals)} ${complete.finalAmount.denomination}`
-	                            : 'No winning amount'}
-	                          {complete.winnerPubkey ? ` · winner ${shortPubkey(complete.winnerPubkey)}` : ''}
-	                        </span>
-	                        {(complete.promotedOrderId || complete.promotedPaymentId) && (
-	                          <span>
-	                            {complete.promotedOrderId ? `order ${shortPubkey(complete.promotedOrderId)}` : ''}
-	                            {complete.promotedOrderId && complete.promotedPaymentId ? ' · ' : ''}
-	                            {complete.promotedPaymentId ? `payment ${shortPubkey(complete.promotedPaymentId)}` : ''}
-	                          </span>
-	                        )}
-	                      </div>
-	                    )}
-	                    {groups.length > 0 && (
-	                      <div className="bid-list">
-	                        {groups.map(group => (
-	                          <div
-	                            className={`bid-row ${isWinningBidGroup(group, complete) ? 'winning-bid' : ''}`}
-	                            key={group.id}
-	                          >
-	                            <div>
-	                              <strong>{formatUnits(safeUnits(group.amount.value), group.amount.decimals)} {group.amount.denomination}</strong>
-	                              <span>
-	                                {shortPubkey(group.bid.event.pubkey)}
-	                                {group.paymentAck ? ` · ack ${shortPubkey(group.paymentAck.event.pubkey)}` : ''}
-	                              </span>
-	                            </div>
-	                            <span className={`order-status ${bidStageClass(group, complete)}`}>
-	                              {bidStageLabel(group, complete)}
-	                            </span>
-	                          </div>
-	                        ))}
-                      </div>
-                    )}
-                  </article>
-                )
-              })}
-            </div>
-          )}
-        </section>
-      </div>
-      <aside className="checkout-panel">
-        <span className="label">Checkout</span>
-        <h2>{price ? formatPrice(price) : 'No price'}</h2>
-        {price?.frequency && (
-          <div className="date-grid">
-            <label>
-              Start
-              <input type="datetime-local" value={start} onChange={event => setStart(event.target.value)} />
-            </label>
-            <label>
-              End
-              <input type="datetime-local" value={end} onChange={event => setEnd(event.target.value)} />
-            </label>
-          </div>
-        )}
-        <div className="quote-row">
-          <span>Total</span>
-          <strong>{total ?? '0'} {price?.currency}</strong>
-        </div>
-        {price && listing.negotiable && (
-          <label>
-            Offer
-            <input
-              inputMode="decimal"
-              value={offerAmount}
-              onChange={event => {
-                setOfferTouched(true)
-                setOfferAmount(event.target.value)
-              }}
-            />
-          </label>
-        )}
-        <div className="checkout-actions">
-          <button className="button" type="button" disabled={publishing} onClick={startCheckout}>
-            {publishing ? 'Working...' : offerIsBelowTotal ? 'Negotiate' : 'Checkout'}
-          </button>
-          {listing.negotiable && !offerIsBelowTotal && (
-            <button className="button secondary" type="button" disabled={publishing} onClick={negotiate}>
-              Negotiate
-            </button>
-          )}
-        </div>
-        {invoice && (
-          <div className="invoice-box">
-            <span className="label">Lightning invoice</span>
-            <textarea readOnly value={invoice} />
-          </div>
-        )}
-        {paymentMessages.length > 0 && (
-          <pre className="payment-log">{paymentMessages.join('\n\n')}</pre>
-        )}
-      </aside>
-      {escrowPickerOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal-panel escrow-picker"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="escrow-picker-title"
-          >
-            <div className="modal-header">
+    <section className="grid grid-cols-[minmax(0,1fr)_360px] items-start gap-6 p-7 max-[860px]:grid-cols-1">
+      <div className="min-w-0">
+        {image && <img className="mb-5 h-[390px] w-full rounded-xl object-cover max-[860px]:h-64" src={image} alt="" />}
+        <Eyebrow className="mb-2">{listing.location || 'Classified'}</Eyebrow>
+        <h1 className="text-3xl font-medium leading-tight">{listing.title}</h1>
+        {listing.summary && <p className="mt-3 text-lg leading-8 text-muted-foreground">{listing.summary}</p>}
+        <p className={cn(listing.summary ? 'text-sm leading-6' : 'mt-3 text-lg leading-8', 'text-muted-foreground')}>{listing.description}</p>
+        <CodeHint
+          code="marketplace.reviews.search({ listingAnchor: listingAnchorValue, limit: 80 }, { maxWait: 1500 })"
+          className="rounded-xl"
+        >
+          <ListingReviews
+            error={reviewsError}
+            loading={reviewsLoading}
+            profiles={reviewProfiles}
+            reviews={reviewItems}
+          />
+        </CodeHint>
+        <CodeHint
+          code={[
+            'marketplace.auctions.search({ listingAnchor: listingAnchorValue, limit: 20 })',
+            'marketplace.auctions.subscribe({ listingAnchor: listingAnchorValue, limit: 20 }, handlers)',
+            'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).query({ maxWait: 2500 })',
+            'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).stream({ maxWait: 2500 })',
+            'auctionScope.filter(marketplace.auctionScopes.isBid)',
+          ]}
+          className="mt-6 rounded-xl"
+        >
+          <section className="grid gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <span className="label">Escrow</span>
-                <h2 id="escrow-picker-title">Choose arbitration</h2>
+                <Eyebrow className="mb-2">Auctions</Eyebrow>
+                <h2 className="text-lg font-medium">Listing auctions</h2>
               </div>
-              <button
-                className="button secondary"
-                type="button"
-                disabled={publishing}
-                onClick={() => setEscrowPickerOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            <div className="escrow-picker-grid">
-              <label>
-                Seller trusted escrow
-                <select
-                  value={selectedEscrowPubkey}
-                  disabled={escrowPickerLoading || publishing || escrowChoices.length === 0}
-                  onChange={event => selectEscrow(event.target.value)}
+              {isSeller && (
+                <Button
+                  variant="secondary"
+                  disabled={!marketplaceState || auctionPublishing}
+                  onClick={openAuctionModal}
                 >
-                  <option value="" disabled>
-                    {escrowPickerLoading ? 'Loading escrows...' : 'Choose escrow'}
-                  </option>
-                  {escrowChoices.map(choice => (
-                    <option
-                      key={choice.pubkey}
-                      value={choice.pubkey}
-                      disabled={Boolean(choice.disabledReason)}
-                    >
-                      {escrowProfileLabel(choice.pubkey, choice.profile)}
-                      {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Arbitration service
-                <select
-                  value={selectedServiceKey}
-                  disabled={escrowPickerLoading || publishing || !selectedEscrow}
-                  onChange={event => setSelectedServiceKey(event.target.value)}
-                >
-                  <option value="" disabled>
-                    {selectedEscrow ? 'Choose service' : 'Choose escrow first'}
-                  </option>
-                  {(selectedEscrow?.services ?? []).map(choice => (
-                    <option
-                      key={choice.key}
-                      value={choice.key}
-                      disabled={!choice.route}
-                    >
-                      {serviceChoiceLabel(choice)}
-                      {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            {selectedEscrow && (
-              <div className="escrow-picker-summary">
-                <ProfileChip pubkey={selectedEscrow.pubkey} profile={selectedEscrow.profile} />
-                {selectedService?.route ? (
-                  <p>
-                    {selectedService.route.policy.method.toUpperCase()} / {selectedService.route.asset.denomination}
-                    {' '}via {selectedService.service.content.type}
-                  </p>
-                ) : (
-                  <p>{selectedEscrow.disabledReason ?? 'Select a usable arbitration service'}</p>
-                )}
-              </div>
-            )}
-            {escrowPickerError && <p className="modal-error">{escrowPickerError}</p>}
-            <div className="modal-actions">
-              <button
-                className="button secondary"
-                type="button"
-                disabled={publishing}
-                onClick={loadEscrowChoices}
-              >
-                Refresh
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={publishing || escrowPickerLoading || !selectedRoute}
-                onClick={confirmEscrowSelection}
-              >
-                Continue to invoice
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-      {checkoutPaymentOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal-panel payment-status-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="checkout-payment-title"
-          >
-            <div className="modal-header">
-              <div>
-                <span className="label">Payment</span>
-                <h2 id="checkout-payment-title">Purchase payment</h2>
-              </div>
-              <button
-                className="button secondary"
-                type="button"
-                disabled={publishing}
-                onClick={() => setCheckoutPaymentOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            {checkoutFlowStatus !== 'idle' && (
-              <div
-                className={`modal-status ${checkoutFlowStatus}`}
-                role={checkoutFlowStatus === 'error' ? 'alert' : 'status'}
-              >
-                <strong>
-                  {checkoutFlowStatus === 'success'
-                    ? 'Purchase submitted'
-                    : checkoutFlowStatus === 'error'
-                      ? 'Purchase failed'
-                      : invoice
-                        ? 'Payment required'
-                        : 'Preparing payment'}
-                </strong>
-                <p>
-                  {checkoutFlowStatus === 'success'
-                    ? 'The order and payment proof were published.'
-                    : checkoutFlowStatus === 'error'
-                      ? checkoutFlowError ?? 'The purchase flow stopped before publishing.'
-                      : invoice
-                        ? 'Waiting for the external invoice payment to complete.'
-                        : 'Creating the order payment with the selected escrow route.'}
-                </p>
-              </div>
-            )}
-            {checkoutFlowError && checkoutFlowStatus !== 'error' && (
-              <p className="modal-error">{checkoutFlowError}</p>
-            )}
-            {invoice && (
-              <div className="invoice-box">
-                <span className="label">Lightning invoice</span>
-                <textarea readOnly value={invoice} />
-              </div>
-            )}
-            {paymentMessages.length > 0 && (
-              <pre className="payment-log">{paymentMessages.join('\n\n')}</pre>
-            )}
-            <div className="modal-actions">
-              <button
-                className="button secondary"
-                type="button"
-                disabled={publishing}
-                onClick={() => setCheckoutPaymentOpen(false)}
-              >
-                {checkoutFlowStatus === 'success' ? 'Done' : 'Close'}
-              </button>
-              {checkoutFlowStatus === 'error' && selectedRoute && (
-                <button
-                  className="button"
-                  type="button"
-                  disabled={publishing}
-                  onClick={() => void checkoutWithRoute(selectedRoute)}
-                >
-                  Retry
-                </button>
+                  Create auction
+                </Button>
               )}
             </div>
-          </section>
-        </div>
-      )}
-      {auctionModalOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal-panel escrow-picker"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="auction-create-title"
-          >
-            <div className="modal-header">
-              <div>
-                <span className="label">Auction</span>
-                <h2 id="auction-create-title">Schedule auction</h2>
+            {auctionLoading && <p className="m-0 text-sm leading-6 text-muted-foreground">Loading auctions...</p>}
+            {auctionError && <p className="m-0 text-sm leading-6 text-destructive">{auctionError}</p>}
+            {!auctionLoading && auctions.length === 0 && (
+              <p className="m-0 text-sm leading-6 text-muted-foreground">No auctions attached to this listing.</p>
+            )}
+            {auctions.length > 0 && (
+              <div className="grid gap-3">
+                {auctions.map(auction => {
+                  const chains = bidChainsByAuction[auction.auctionAnchor] ?? []
+                  const complete = auctionCompletesByAuction[auction.auctionAnchor]
+                  const highest = highestBidChainUnits(chains)
+                  const status = auctionDisplayStatus(auction, complete)
+                  const isLive = status === 'Live'
+                  return (
+                    <Card className="grid gap-4 p-4" key={auction.auctionAnchor}>
+                      <div className="flex min-w-0 items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <strong className="block text-base font-medium">{status}</strong>
+                          <span className="mt-1 block text-sm text-muted-foreground">{auction.currency} auction</span>
+                        </div>
+                        <Badge variant={complete ? 'default' : 'secondary'}>
+                          {complete ? status : `${chains.length} bid chain${chains.length === 1 ? '' : 's'}`}
+                        </Badge>
+                      </div>
+                      <Facts facts={[
+                        { label: 'Starts', value: formatDateTime(auction.startAt) },
+                        { label: 'Ends', value: <AuctionEndValue seconds={auction.endAt} /> },
+                        { label: 'Starting bid', value: formatDenominatedUnits(safeUnits(auction.startingBid), auction.decimals, auction.currency) },
+                        { label: 'Highest bid', value: formatDenominatedUnits(highest, auction.decimals, auction.currency) },
+                        { label: 'Arbiter', value: shortPubkey(auction.arbiterPubkey) },
+                      ]} />
+                      <div className="flex min-w-0 flex-wrap items-center justify-between gap-4">
+                        {!isSeller && (
+                          <Button
+                            disabled={!isLive || bidPublishing}
+                            onClick={() => {
+                              if (!session) onLoginRequired('Sign in to place auction bids')
+                              else openBidModal(auction)
+                            }}
+                          >
+                            Place bid
+                          </Button>
+                        )}
+                        {isSeller && <span className="text-sm text-muted-foreground">Bids settle through {shortPubkey(auction.arbiterPubkey)}</span>}
+                      </div>
+                      {complete && (
+                        <div className="grid gap-1 rounded-lg border bg-muted/50 p-3 text-sm leading-6">
+                          <strong>{auctionCompleteLabel(complete)}</strong>
+                          <span className="text-muted-foreground [overflow-wrap:anywhere]">
+                            {complete.finalAmount
+                              ? formatMarketplaceAmount(complete.finalAmount)
+                              : 'No winning amount'}
+                            {complete.winnerPubkey ? ` · winner ${shortPubkey(complete.winnerPubkey)}` : ''}
+                          </span>
+                          {(complete.promotedOrderId || complete.promotedPaymentId) && (
+                            <span className="text-muted-foreground [overflow-wrap:anywhere]">
+                              {complete.promotedOrderId ? `order ${shortPubkey(complete.promotedOrderId)}` : ''}
+                              {complete.promotedOrderId && complete.promotedPaymentId ? ' · ' : ''}
+                              {complete.promotedPaymentId ? `payment ${shortPubkey(complete.promotedPaymentId)}` : ''}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {chains.length > 0 && (
+                        <div className="grid gap-3 border-t pt-3">
+                          {chains.map(chain => {
+                            const bidGroupKey = `${auction.auctionAnchor}:${chain.id}`
+                            return (
+                              <CodeHint
+                                code={[
+                                  'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).query({ maxWait: 2500 })',
+                                  'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).stream({ maxWait: 2500 })',
+                                  'auctionScope.filter(marketplace.auctionScopes.isBid)',
+                                ]}
+                                className="rounded-lg"
+                                key={bidGroupKey}
+                              >
+                                <AuctionBidChainAccordion
+                                  bidProfiles={bidProfiles}
+                                  chain={chain}
+                                  complete={complete}
+                                  evmBlockExplorerUrl={evmBlockExplorerUrl}
+	                                  expanded={expandedBidGroupKey === bidGroupKey}
+                                  onToggle={() => {
+                                    setExpandedBidGroupKey(current => current === bidGroupKey ? undefined : bidGroupKey)
+                                  }}
+                                />
+                              </CodeHint>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </Card>
+                  )
+                })}
               </div>
-              <button
-                className="button secondary"
-                type="button"
-                disabled={auctionPublishing}
-                onClick={() => setAuctionModalOpen(false)}
-              >
-                Close
-              </button>
+            )}
+          </section>
+        </CodeHint>
+      </div>
+	      <CodeHint
+	        code={[
+	          'const amount = marketplaceSession.listings.price(listing, { start, end })',
+	          "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'order' })",
+	          'marketplaceSession.pay(listing, order, { route, identityProof, paymentProofPrivacy })',
+	        ]}
+        className="sticky top-7 rounded-xl"
+      >
+        <Card className="grid min-w-0 gap-4 p-4">
+          <Eyebrow>Checkout</Eyebrow>
+          <h2 className="text-lg font-medium">{price ? formatPrice(price) : 'No price'}</h2>
+          {price?.frequency && (
+            <DateRangePicker
+              end={end}
+              id="checkout-date-range"
+              label="Dates"
+              start={start}
+              onChange={range => {
+                setStart(range.start)
+                setEnd(range.end)
+              }}
+            />
+          )}
+          <div className="flex items-baseline justify-between gap-4">
+            <span>Total</span>
+            <strong className="min-w-0 text-right [overflow-wrap:anywhere]">{formattedTotal}</strong>
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-2">
+            <Button disabled={publishing || !price} onClick={startCheckout}>
+              {publishing ? 'Working...' : 'Checkout'}
+            </Button>
+            {listing.negotiable && (
+              <Button variant="secondary" disabled={publishing || !price} onClick={openNegotiateDialog}>
+                Negotiate
+              </Button>
+            )}
+          </div>
+        </Card>
+      </CodeHint>
+      <Dialog open={negotiateOpen} onOpenChange={open => !publishing && setNegotiateOpen(open)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <Eyebrow>Negotiate</Eyebrow>
+            <DialogTitle>Send offer</DialogTitle>
+            <DialogDescription className="sr-only">
+              Enter an offer amount and send the negotiation offer to the seller.
+            </DialogDescription>
+          </DialogHeader>
+          <CodeHint
+            code="marketplaceSession.orders.negotiate(listing, { amount })"
+            className="grid gap-4 rounded-xl"
+          >
+            <div className="flex items-baseline justify-between gap-4 rounded-lg border bg-muted/50 p-3">
+              <span className="text-sm text-muted-foreground">Listed total</span>
+              <strong className="min-w-0 text-right [overflow-wrap:anywhere]">{formattedTotal}</strong>
             </div>
-            <div className="form-grid">
-              <label>
-                Currency
-                <select
+            {price && (
+              <Field label="Amount">
+                <CurrencyInput
+                  currency={price.currency}
+                  decimals={priceCurrencyDecimals}
+                  max={offerMaximum}
+                  min={offerMinimum}
+                  value={offerAmount}
+                  onValueChange={value => {
+                    setOfferTouched(true)
+                    setOfferAmount(value)
+                  }}
+                />
+              </Field>
+            )}
+            {!offerAmountValidation.valid && (
+              <p className="m-0 text-sm text-destructive">{offerAmountValidation.error}</p>
+            )}
+          </CodeHint>
+          <DialogFooter>
+            <Button variant="secondary" disabled={publishing} onClick={() => setNegotiateOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={publishing || !offerAmountValidation.valid} onClick={() => void negotiate()}>
+              {publishing ? 'Sending...' : 'Send offer'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={arbiterPickerOpen} onOpenChange={open => !publishing && setArbiterPickerOpen(open)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <Eyebrow>Arbiter</Eyebrow>
+            <DialogTitle>Choose arbitration</DialogTitle>
+            <DialogDescription className="sr-only">
+              Review or change the arbitration route before creating the purchase invoice.
+            </DialogDescription>
+          </DialogHeader>
+	          <CodeHint
+	            code={[
+	              'const amount = marketplaceSession.listings.price(listing, { start, end })',
+	              "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'order' })",
+            ]}
+            className="grid gap-4 rounded-xl"
+          >
+            <AdvancedAccordion
+              title="Advanced payment settings"
+              summary={[
+                routeSummary(selectedRoute, selectedService) ?? (arbiterPickerLoading ? 'Loading route' : 'No route selected'),
+                checkoutPublic ? 'Public identity' : '',
+                checkoutPaymentPrivate ? 'Private payment proof' : '',
+              ].filter(Boolean).join(', ')}
+            >
+              <div className="grid grid-cols-2 gap-4 max-[860px]:grid-cols-1">
+                <Field label="Seller trusted arbiter">
+                  <Select
+                    value={selectedArbiterPubkey}
+                    disabled={arbiterPickerLoading || publishing || arbiterChoices.length === 0}
+                    onValueChange={value => selectArbiter(value)}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={arbiterPickerLoading ? 'Loading arbiters...' : 'Choose arbiter'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {arbiterChoices.map(choice => (
+                        <SelectItem
+                          key={choice.pubkey}
+                          value={choice.pubkey}
+                          disabled={Boolean(choice.disabledReason)}
+                        >
+                          {arbiterProfileLabel(choice.pubkey, choice.profile)}
+                          {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Arbitration service">
+                  <Select
+                    value={selectedServiceKey}
+                    disabled={arbiterPickerLoading || publishing || !selectedArbiter}
+                    onValueChange={setSelectedServiceKey}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={selectedArbiter ? 'Choose service' : 'Choose arbiter first'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(selectedArbiter?.services ?? []).map(choice => (
+                        <SelectItem key={choice.key} value={choice.key} disabled={!choice.route}>
+                          {serviceChoiceLabel(choice)}
+                          {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              {selectedArbiter && (
+                <PaymentRouteSummary
+                  arbiterPubkey={selectedArbiter.pubkey}
+                  fallback={selectedArbiter.disabledReason ?? 'Select a usable arbitration service'}
+                  profile={selectedArbiter.profile}
+                  route={selectedService?.route}
+                  serviceType={selectedService?.service.content.type}
+                />
+              )}
+              <PrivacyOption
+                id="checkout-public"
+                checked={checkoutPublic}
+                disabled={publishing}
+                label="Make public"
+                description="Attach proof of your real pubkey to this order."
+                onChange={setCheckoutPublic}
+              />
+              <PrivacyOption
+                id="checkout-payment-private"
+                checked={checkoutPaymentPrivate}
+                disabled={publishing}
+                label="Keep payment proof private"
+                description="Only the seller, arbiter, and your trade key can decrypt it."
+                onChange={setCheckoutPaymentPrivate}
+              />
+            </AdvancedAccordion>
+            {arbiterPickerError && <p className="m-0 text-sm text-destructive">{arbiterPickerError}</p>}
+          </CodeHint>
+          <DialogFooter>
+              <Button
+                variant="secondary"
+                disabled={publishing}
+                onClick={loadArbiterChoices}
+              >
+                Refresh
+              </Button>
+              <Button
+                disabled={publishing || arbiterPickerLoading || !selectedRoute}
+                onClick={confirmArbiterSelection}
+              >
+                Continue to invoice
+              </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={checkoutPaymentOpen} onOpenChange={setCheckoutPaymentOpen}>
+        <DialogContent className={checkoutFlowStatus === 'success' ? 'max-w-md' : 'max-w-2xl'}>
+          {checkoutFlowStatus === 'success' ? (
+            <>
+              <DialogTitle className="sr-only">Purchase submitted</DialogTitle>
+              <FlowDoneView body="The order and payment proof were published." />
+              <DialogFooter>
+                <Button onClick={() => setCheckoutPaymentOpen(false)}>
+                  Done
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <Eyebrow>Payment</Eyebrow>
+                <DialogTitle>Purchase payment</DialogTitle>
+                <DialogDescription className="sr-only">
+                  Track purchase payment status and invoice details.
+                </DialogDescription>
+              </DialogHeader>
+              <CodeHint
+                code="marketplaceSession.pay(listing, order, { route, identityProof, paymentProofPrivacy })"
+                className="grid gap-4 rounded-xl"
+              >
+                <PaymentStatusPanel
+                    error={checkoutFlowError}
+                    hasInvoice={checkoutInvoiceActive}
+                    status={checkoutFlowStatus}
+                    labels={{
+                      successTitle: 'Purchase submitted',
+                      errorTitle: 'Purchase failed',
+                      invoiceTitle: 'Payment required',
+                      workingTitle: 'Preparing payment',
+                      successBody: 'The order and payment proof were published.',
+                      errorBody: 'The purchase flow stopped before publishing.',
+                      invoiceBody: 'Waiting for the external invoice payment to complete.',
+                      workingBody: checkoutProgressMessage,
+                    }}
+                  />
+                  {checkoutFlowError && checkoutFlowStatus !== 'error' && (
+                    <p className="m-0 text-sm text-destructive">{checkoutFlowError}</p>
+                  )}
+                  {checkoutInvoiceActive && invoice ? (
+                    <InvoiceBox value={invoice} />
+                  ) : checkoutFlowStatus === 'working' ? (
+                    <PaymentProgressIndicator label={checkoutProgressMessage} />
+                  ) : null}
+              </CodeHint>
+              <DialogFooter>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setCheckoutPaymentOpen(false)}
+                  >
+                    Close
+                  </Button>
+                  {checkoutFlowStatus === 'error' && selectedRoute && (
+                    <Button
+                      disabled={publishing}
+                      onClick={() => void checkoutWithRoute(selectedRoute)}
+                    >
+                      Retry
+                    </Button>
+                  )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={auctionModalOpen} onOpenChange={open => !auctionPublishing && setAuctionModalOpen(open)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <Eyebrow>Auction</Eyebrow>
+            <DialogTitle>Schedule auction</DialogTitle>
+            <DialogDescription className="sr-only">
+              Create an auction for this listing and adjust optional auction route settings.
+            </DialogDescription>
+          </DialogHeader>
+	          <CodeHint
+	            code={[
+	              'const amount = routeAmountForCurrency(currency)',
+	              "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'bid' })",
+	              'marketplace.auctions.template(auction)',
+	              'publisher.sign(template)',
+	              'publisher.publish(event)',
+            ]}
+            className="grid gap-4 rounded-xl"
+          >
+            <div className="grid grid-cols-2 gap-4 max-[860px]:grid-cols-1">
+              <Field label="Currency">
+                <Select
                   value={auctionCurrency}
                   disabled={auctionPublishing || availableAuctionCurrencies.length === 0}
-                  onChange={event => setAuctionCurrency(event.target.value)}
+                  onValueChange={setAuctionCurrency}
                 >
-                  <option value="" disabled>Choose currency</option>
-                  {availableAuctionCurrencies.map(currency => (
-                    <option key={currency} value={currency}>{currency}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Starting bid
-                <input
-                  inputMode="decimal"
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Choose currency" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableAuctionCurrencies.map(currency => (
+                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Starting bid">
+                <CurrencyInput
+                  currency={auctionCurrency}
+                  decimals={auctionAmountDecimals}
+                  min={auctionStartingBidMinimum}
                   value={auctionStartingBid}
                   disabled={auctionPublishing}
-                  onChange={event => setAuctionStartingBid(event.target.value)}
+                  onValueChange={value => setAuctionStartingBid(value)}
                 />
-              </label>
-              <label>
-                Min increment
-                <input
-                  inputMode="decimal"
+              </Field>
+              <Field label="Min increment">
+                <CurrencyInput
+                  currency={auctionCurrency}
+                  decimals={auctionAmountDecimals}
+                  min={auctionMinimum}
                   value={auctionMinIncrement}
                   disabled={auctionPublishing}
-                  onChange={event => setAuctionMinIncrement(event.target.value)}
+                  onValueChange={value => setAuctionMinIncrement(value)}
                 />
-              </label>
-              <label>
-                Reserve
-                <input
-                  inputMode="decimal"
+              </Field>
+              <Field label="Reserve">
+                <CurrencyInput
+                  currency={auctionCurrency}
+                  decimals={auctionAmountDecimals}
+                  min={auctionMinimum}
                   value={auctionReserve}
                   disabled={auctionPublishing}
                   placeholder="Optional"
-                  onChange={event => setAuctionReserve(event.target.value)}
+                  onValueChange={value => setAuctionReserve(value)}
                 />
-              </label>
-              <label>
-                Starts
-                <input
+              </Field>
+              <Field label="Starts">
+                <Input
                   type="datetime-local"
                   value={auctionStart}
                   disabled={auctionPublishing}
                   onChange={event => setAuctionStart(event.target.value)}
                 />
-              </label>
-              <label>
-                Ends
-                <input
+              </Field>
+              <Field label="Ends">
+                <Input
                   type="datetime-local"
                   value={auctionEnd}
                   disabled={auctionPublishing}
                   onChange={event => setAuctionEnd(event.target.value)}
                 />
-              </label>
+              </Field>
             </div>
-            <div className="escrow-picker-grid">
-              <label>
-                Auction arbiter
-                <select
-                  value={selectedAuctionEscrowPubkey}
-                  disabled={auctionEscrowLoading || auctionPublishing || auctionEscrowChoices.length === 0}
-                  onChange={event => selectAuctionEscrow(event.target.value)}
-                >
-                  <option value="" disabled>
-                    {auctionEscrowLoading ? 'Loading escrows...' : 'Choose escrow'}
-                  </option>
-                  {auctionEscrowChoices.map(choice => (
-                    <option
-                      key={choice.pubkey}
-                      value={choice.pubkey}
-                      disabled={Boolean(choice.disabledReason)}
-                    >
-                      {escrowProfileLabel(choice.pubkey, choice.profile)}
-                      {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Auction service
-                <select
-                  value={selectedAuctionServiceKey}
-                  disabled={auctionEscrowLoading || auctionPublishing || !selectedAuctionEscrow}
-                  onChange={event => setSelectedAuctionServiceKey(event.target.value)}
-                >
-                  <option value="" disabled>
-                    {selectedAuctionEscrow ? 'Choose service' : 'Choose arbiter first'}
-                  </option>
-                  {(selectedAuctionEscrow?.services ?? []).map(choice => (
-                    <option key={choice.key} value={choice.key} disabled={!choice.route}>
-                      {serviceChoiceLabel(choice)}
-                      {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            {selectedAuctionEscrow && (
-              <div className="escrow-picker-summary">
-                <ProfileChip pubkey={selectedAuctionEscrow.pubkey} profile={selectedAuctionEscrow.profile} />
-                {selectedAuctionRoute ? (
-                  <p>
-                    {selectedAuctionRoute.policy.method.toUpperCase()} / {selectedAuctionRoute.asset.denomination}
-                    {' '}via {selectedAuctionService?.service.content.type}
-                  </p>
-                ) : (
-                  <p>{selectedAuctionEscrow.disabledReason ?? 'Select a usable auction service'}</p>
-                )}
+            <AdvancedAccordion
+              title="Advanced auction settings"
+              summary={routeSummary(selectedAuctionRoute, selectedAuctionService) ?? (auctionArbiterLoading ? 'Loading route' : 'No route selected')}
+            >
+              <div className="grid grid-cols-2 gap-4 max-[860px]:grid-cols-1">
+                <Field label="Auction arbiter">
+                  <Select
+                    value={selectedAuctionArbiterPubkey}
+                    disabled={auctionArbiterLoading || auctionPublishing || auctionArbiterChoices.length === 0}
+                    onValueChange={value => selectAuctionArbiter(value)}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={auctionArbiterLoading ? 'Loading arbiters...' : 'Choose arbiter'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {auctionArbiterChoices.map(choice => (
+                        <SelectItem
+                          key={choice.pubkey}
+                          value={choice.pubkey}
+                          disabled={Boolean(choice.disabledReason)}
+                        >
+                          {arbiterProfileLabel(choice.pubkey, choice.profile)}
+                          {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Auction service">
+                  <Select
+                    value={selectedAuctionServiceKey}
+                    disabled={auctionArbiterLoading || auctionPublishing || !selectedAuctionArbiter}
+                    onValueChange={setSelectedAuctionServiceKey}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={selectedAuctionArbiter ? 'Choose service' : 'Choose arbiter first'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(selectedAuctionArbiter?.services ?? []).map(choice => (
+                        <SelectItem key={choice.key} value={choice.key} disabled={!choice.route}>
+                          {serviceChoiceLabel(choice)}
+                          {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
               </div>
-            )}
-            {auctionEscrowError && <p className="modal-error">{auctionEscrowError}</p>}
-            <div className="modal-actions">
-              <button
-                className="button secondary"
-                type="button"
-                disabled={auctionPublishing || auctionEscrowLoading}
-                onClick={() => loadAuctionEscrowChoices()}
+              {selectedAuctionArbiter && (
+                <PaymentRouteSummary
+                  arbiterPubkey={selectedAuctionArbiter.pubkey}
+                  fallback={selectedAuctionArbiter.disabledReason ?? 'Select a usable auction service'}
+                  profile={selectedAuctionArbiter.profile}
+                  route={selectedAuctionRoute}
+                  serviceType={selectedAuctionService?.service.content.type}
+                />
+              )}
+            </AdvancedAccordion>
+            {auctionArbiterError && <p className="m-0 text-sm text-destructive">{auctionArbiterError}</p>}
+          <DialogFooter>
+              <Button
+                variant="secondary"
+                disabled={auctionPublishing || auctionArbiterLoading}
+                onClick={() => loadAuctionArbiterChoices()}
               >
                 Refresh
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={auctionPublishing || auctionEscrowLoading || !selectedAuctionRoute}
+              </Button>
+              <Button
+                disabled={auctionPublishing || auctionArbiterLoading || !selectedAuctionRoute || !auctionAmountsValid}
                 onClick={createAuction}
               >
-                {auctionPublishing ? 'Publishing...' : 'Create auction'}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-      {bidAuction && (
-        <div className="modal-backdrop" role="presentation">
-          <section
-            className="modal-panel escrow-picker"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="auction-bid-title"
-          >
-            <div className="modal-header">
-              <div>
-                <span className="label">Bid</span>
-                <h2 id="auction-bid-title">Place auction bid</h2>
-              </div>
-              <button
-                className="button secondary"
-                type="button"
-                disabled={bidPublishing}
-                onClick={closeBidModal}
-              >
-                Close
-              </button>
-            </div>
-            {bidFlowStatus !== 'idle' && (
-              <div
-                className={`modal-status ${bidFlowStatus}`}
-                role={bidFlowStatus === 'error' ? 'alert' : 'status'}
-              >
-                <strong>
-                  {bidFlowStatus === 'success'
-                    ? 'Bid submitted'
-                    : bidFlowStatus === 'error'
-                      ? 'Bid failed'
-                      : bidInvoice
-                        ? 'Payment required'
-                        : 'Preparing bid'}
-                </strong>
-                <p>
-                  {bidFlowStatus === 'success'
-                    ? 'The bid and payment proof were published.'
-                    : bidFlowStatus === 'error'
-                      ? bidFlowError ?? 'The bid flow stopped before publishing.'
-                      : bidInvoice
-                        ? 'Waiting for the external invoice payment to complete.'
-                        : 'Creating the funded bid with the selected auction arbiter.'}
-                </p>
-              </div>
-            )}
-            <dl className="auction-facts">
-              <div>
-                <dt>Currency</dt>
-                <dd>{bidAuction.currency}</dd>
-              </div>
-              <div>
-                <dt>Current bid</dt>
-                <dd>
-                  {formatUnits(highestBidUnits(bidGroupsByAuction[bidAuction.auctionAnchor] ?? []), bidAuction.decimals)}
-                  {' '}{bidAuction.currency}
-                </dd>
-              </div>
-              <div>
-                <dt>Ends</dt>
-                <dd>{formatDateTime(bidAuction.endAt)}</dd>
-              </div>
-            </dl>
-            <label>
-              Bid amount
-              <input
-                inputMode="decimal"
+	                {auctionPublishing ? 'Publishing...' : 'Create auction'}
+	              </Button>
+	          </DialogFooter>
+          </CodeHint>
+	        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(bidAuction)} onOpenChange={open => {
+        if (!open) closeBidModal()
+      }}>
+        <DialogContent className={bidFlowStatus === 'success' ? 'max-w-md' : 'max-w-3xl'}>
+          {bidFlowStatus === 'success' ? (
+            <>
+              <DialogTitle className="sr-only">Bid submitted</DialogTitle>
+              <FlowDoneView body="The bid and payment proof were published." />
+              <DialogFooter>
+                <Button onClick={closeBidModal}>
+                  Done
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <Eyebrow>Bid</Eyebrow>
+                <DialogTitle>{bidPreviousChain ? 'Increase auction bid' : 'Place auction bid'}</DialogTitle>
+                <DialogDescription className="sr-only">
+                  Enter an auction bid and adjust optional bid privacy settings.
+                </DialogDescription>
+	            </DialogHeader>
+		            {bidAuction && (
+		            <CodeHint
+		              code={[
+		                "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'bid' })",
+		                'marketplaceSession.auctions.bid(listing, bid, { auction: bidAuction.event, route: bidRoute, identityProof, paymentProofPrivacy })',
+		              ]}
+		              className="grid gap-4 rounded-xl"
+		            >
+	            <PaymentStatusPanel
+	              error={bidFlowError}
+	              hasInvoice={bidInvoiceActive}
+              status={bidFlowStatus}
+              labels={{
+                successTitle: 'Bid payment published',
+                errorTitle: 'Bid failed',
+                invoiceTitle: 'Payment required',
+                workingTitle: 'Preparing bid',
+                successBody: 'The bid and payment proof were published. The arbiter still needs to validate it before it counts.',
+                errorBody: 'The bid flow stopped before publishing.',
+                invoiceBody: 'Waiting for the external invoice payment to complete.',
+                workingBody: bidProgressMessage,
+              }}
+            />
+            <Facts facts={[
+              { label: 'Currency', value: bidAuction.currency },
+              {
+                label: 'Current high bid',
+                value: formatDenominatedUnits(
+                  highestBidChainUnits(bidAuctionChains),
+                  bidAuction.decimals,
+                  bidAuction.currency,
+                ),
+              },
+              ...(bidPreviousChain ? [
+                {
+                  label: 'Previous bid',
+                  value: `${formatMarketplaceAmount(bidPreviousChain.amount)} across ${plural(bidPreviousChain.groups.length, 'bid')}`,
+                },
+                {
+                  label: 'New bid total',
+                  value: formatDenominatedUnits(bidNewTotalUnits, bidAuction.decimals, bidAuction.currency),
+                },
+              ] : []),
+              { label: 'Ends', value: formatDateTime(bidAuction.endAt) },
+            ]} />
+            <Field label={bidPreviousChain ? 'Add amount' : 'Bid amount'}>
+              <CurrencyInput
+                currency={bidAuction.currency}
+                decimals={bidAuction.decimals}
+                min={bidMinimum}
+                required
                 value={bidAmount}
                 disabled={bidPublishing}
-                onChange={event => {
-                  setBidAmount(event.target.value)
+                onValueChange={value => {
+                  setBidAmount(value)
                   if (bidFlowStatus !== 'working') {
                     setBidFlowStatus('idle')
                     setBidFlowError(undefined)
                     setBidInvoice(undefined)
-                    setBidMessages([])
+                    setBidInvoiceActive(false)
+                    setBidProgressMessage('Creating the funded bid with the selected auction arbiter.')
                   }
                 }}
               />
-            </label>
-            {bidInvoice && (
-              <div className="invoice-box">
-                <span className="label">Payment required</span>
-                <textarea readOnly value={bidInvoice} />
+            </Field>
+            {bidPreviousChain && (
+              <div className="grid gap-1 rounded-lg border bg-muted/50 p-3 text-sm leading-6">
+                <strong>Previous bid chain</strong>
+                <span className="text-muted-foreground [overflow-wrap:anywhere]">
+                  {formatMarketplaceAmount(bidPreviousChain.amount)}
+                  {' · '}
+                  head {shortPubkey(bidPreviousChain.head.bid.event.id)}
+                  {' · '}
+                  {plural(bidPreviousChain.paymentEventIds.length, 'payment')}
+                </span>
               </div>
             )}
-            {bidMessages.length > 0 && (
-              <pre className="payment-log">{bidMessages.join('\n\n')}</pre>
-            )}
-            <div className="modal-actions">
-              <button
-                className="button secondary"
-                type="button"
+            <AdvancedAccordion
+              title="Advanced bid settings"
+              summary={[
+                routeSummary(selectedBidRoute, undefined) ?? (bidRouteLoading ? 'Loading route' : bidRouteError ? 'Route unavailable' : 'No route selected'),
+                bidPublic ? 'Public identity' : '',
+                bidPaymentPrivate ? 'Private payment proof' : '',
+              ].filter(Boolean).join(', ')}
+            >
+              <PaymentRouteSummary
+                arbiterPubkey={bidAuction.arbiterPubkey}
+                fallback={bidRouteLoading ? 'Loading bid payment route' : bidRouteError ?? 'No supported bid payment route for this auction arbiter'}
+                profile={bidArbiterProfile}
+                route={selectedBidRoute}
+              />
+              <PrivacyOption
+                id="bid-public"
+                checked={bidPublic}
                 disabled={bidPublishing}
+                label="Make public"
+                description="Attach proof of your real pubkey to this bid."
+                onChange={setBidPublic}
+              />
+              <PrivacyOption
+                id="bid-payment-private"
+                checked={bidPaymentPrivate}
+                disabled={bidPublishing}
+                label="Keep payment proof private"
+                description="Only the seller, arbiter, and your trade key can decrypt it."
+                onChange={setBidPaymentPrivate}
+              />
+            </AdvancedAccordion>
+            {bidInvoiceActive && bidInvoice ? (
+              <InvoiceBox label="Payment required" value={bidInvoice} />
+            ) : bidFlowStatus === 'working' ? (
+              <PaymentProgressIndicator label={bidProgressMessage} />
+            ) : null}
+            <DialogFooter>
+              <Button
+                variant="secondary"
                 onClick={closeBidModal}
               >
-                {bidFlowStatus === 'success' ? 'Close' : 'Cancel'}
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={bidPublishing || !bidAmount || bidFlowStatus === 'success'}
+                Cancel
+              </Button>
+              <Button
+                disabled={bidPublishing || !bidAmountValidation.valid}
                 onClick={submitBid}
               >
                 {bidPublishing
                   ? 'Working...'
                   : bidFlowStatus === 'error'
                     ? 'Retry'
-                    : bidFlowStatus === 'success'
-                      ? 'Submitted'
-                      : 'Continue to invoice'}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+                    : 'Continue to invoice'}
+	              </Button>
+	            </DialogFooter>
+	            </CodeHint>
+	          )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   )
 }

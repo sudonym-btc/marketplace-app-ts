@@ -5,6 +5,8 @@ import { finalizeEvent } from 'nostr-tools/pure'
 import { EmptyState } from '../components/EmptyState'
 import { ThreadList } from '../components/ThreadList'
 import { ThreadView } from '../components/ThreadView'
+import { cn } from '../components/ui'
+import { PageHeader } from '../components/widgets/PageLayout'
 import {
   conversationGroups,
   conversationId,
@@ -14,7 +16,7 @@ import {
   withMatchingOrderGroups,
 } from '../nostr/inboxThreads'
 import {
-  escrowPubkeyForOrderGroup,
+  arbiterPubkeyForOrderGroup,
   latestOrder,
   orderGroupCancellable,
 } from '../nostr/orderGroups'
@@ -27,6 +29,9 @@ type Props = {
   orderGroups: marketplace.ParsedOrderGroup[]
   marketplaceState?: LoadedMarketplace
   targetThread?: { conversation: string; participants: string[] }
+  loading?: boolean
+  error?: string
+  onTargetThreadCleared?: () => void
   session: AppSession
   publisher: NostrPublisher
   onSent: () => Promise<void>
@@ -57,8 +62,9 @@ async function deriveBuyerSecretForOrderGroup(
   session: AppSession,
 ): Promise<{ index: number; secretKey: Uint8Array } | undefined> {
   const targetPubkey = buyerPubkeyForOrderGroup(group)
-  if (!targetPubkey || !marketplaceState) return undefined
-  const seedEvent = marketplaceState.runtime.seed.event ?? (await marketplaceState.runtime.seed.ensureCreated()).event
+  const marketplaceSession = marketplaceState?.runtime
+  if (!targetPubkey || !marketplaceSession) return undefined
+  const seedEvent = marketplaceSession.seed.event ?? (await marketplaceSession.seed.ensureCreated()).event
   const payload = marketplace.seed.parsePayload(await session.signer.nip44Decrypt(session.pubkey, seedEvent.content))
   for (let index = 0; index < 500; index += 1) {
     const material = marketplace.seed.deriveTradeMaterial(payload.seed, { index, role: 'buyer' })
@@ -91,6 +97,9 @@ export function InboxPage({
   orderGroups,
   marketplaceState,
   targetThread,
+  loading = false,
+  error,
+  onTargetThreadCleared,
   session,
   publisher,
   onSent,
@@ -225,16 +234,16 @@ export function InboxPage({
     }
   }
 
-  function messageEscrow(group: marketplace.ParsedOrderGroup): void {
-    const escrowPubkey = escrowPubkeyForOrderGroup(group)
-    if (!escrowPubkey) {
-      onError('This order does not tag an escrow pubkey')
+  function messageArbiter(group: marketplace.ParsedOrderGroup): void {
+    const arbiterPubkey = arbiterPubkeyForOrderGroup(group)
+    if (!arbiterPubkey) {
+      onError('This order does not tag an arbiter pubkey')
       return
     }
-    const participants = uniqueSorted([session.pubkey, escrowPubkey, group.sellerPubkey])
+    const participants = uniqueSorted([session.pubkey, arbiterPubkey, group.sellerPubkey])
     const thread = orderBackedConversationGroup(group, participants)
     const existing = baseGroups.find(candidate => candidate.id === thread.id)
-    console.debug('[marketplace-app] opening escrow order thread', {
+    console.debug('[marketplace-app] opening arbiter order thread', {
       tradeId: group.tradeId,
       conversationId: thread.id,
       participantCount: participants.length,
@@ -247,25 +256,35 @@ export function InboxPage({
   function selectThread(id: string): void {
     setAdHocThread(undefined)
     setSelectedId(id)
-    if (targetThread) window.location.hash = '#/inbox'
+    if (targetThread) onTargetThreadCleared?.()
   }
 
+  const showEmptyState = baseGroups.length === 0 && !selectedGroup
+
   return (
-    <section className="page inbox-page">
-      <div className="page-heading">
-        <div>
-          <h1>Inbox</h1>
+    <section
+      className={cn(
+        'grid min-h-0 flex-1 gap-6 p-7',
+        showEmptyState
+          ? 'content-start overflow-y-auto'
+          : 'grid-rows-[auto_minmax(0,1fr)] overflow-hidden',
+      )}
+    >
+      <PageHeader title="Inbox" />
+      {showEmptyState ? (
+        <div className="w-full max-w-2xl">
+          <EmptyState
+            title={error ? 'Unable to load inbox' : loading ? 'Loading inbox' : 'Inbox empty'}
+            body={error ?? (loading ? 'Subscribing to marketplace inbox.' : 'Gift-wrapped messages and negotiation offers will appear here.')}
+          />
         </div>
-      </div>
-      {baseGroups.length === 0 && !selectedGroup ? (
-        <EmptyState title="Inbox empty" body="Gift-wrapped messages and negotiation offers will appear here." />
       ) : (
-        <div className="inbox-layout">
+        <div className="grid min-h-0 grid-cols-[minmax(260px,340px)_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-card max-[860px]:grid-cols-1">
           <ThreadList
             currentPubkey={session.pubkey}
             groups={baseGroups}
             onCancelOrder={cancelOrder}
-            onMessageEscrow={messageEscrow}
+            onMessageArbiter={messageArbiter}
             onSelect={selectThread}
             profiles={profiles}
             selectedId={selectedGroup?.id}
@@ -274,7 +293,7 @@ export function InboxPage({
             currentPubkey={session.pubkey}
             group={selectedGroup}
             onCancelOrder={cancelOrder}
-            onMessageEscrow={messageEscrow}
+            onMessageArbiter={messageArbiter}
             onReply={reply}
             profiles={profiles}
           />

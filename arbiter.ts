@@ -24,6 +24,7 @@ import {
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
 import { EventDeletion } from 'nostr-tools/kinds'
 import * as marketplace from 'nostr-tools/marketplace'
+import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } from 'nostr-tools/nip44'
 import { BunkerSigner, createNostrConnectURI } from 'nostr-tools/nip46'
 import { SimplePool } from 'nostr-tools/pool'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
@@ -36,6 +37,9 @@ type Hex = `0x${string}`
 
 type CliArgs = {
   name: string
+  account?: string
+  manifestPath?: string
+  secretKey?: string
   policies: string[]
   relays: string[]
   connectTimeoutMs: number
@@ -45,6 +49,14 @@ type CliArgs = {
 
 type PoolWithAutomaticAuth = SimplePool & {
   automaticallyAuth?: (relayURL: string) => null | ((event: EventTemplate) => Promise<VerifiedEvent>)
+}
+
+type ArbiterSigner = {
+  getPublicKey: () => string | Promise<string>
+  signEvent: (event: EventTemplate) => VerifiedEvent | Promise<VerifiedEvent>
+  nip44Encrypt: (pubkey: string, plaintext: string) => string | Promise<string>
+  nip44Decrypt: (pubkey: string, ciphertext: string) => string | Promise<string>
+  close?: () => void | Promise<void>
 }
 
 type PolicyBuildResult = {
@@ -59,6 +71,7 @@ const appDir = dirname(fileURLToPath(import.meta.url))
 const nmdkDir = resolve(appDir, '../..')
 const defaultRelay = 'ws://127.0.0.1:18080'
 const defaultName = 'NMDK Marketplace Arbiter'
+const defaultManifestPath = resolve(nmdkDir, 'data/seed/marketplace-seed.json')
 const defaultMaxDuration = 14 * 24 * 60 * 60
 const zeroAddress = '0x0000000000000000000000000000000000000000' as Address
 const devCaBundle = resolve(nmdkDir, 'docker/tls/ca/ca-bundle.crt')
@@ -161,10 +174,13 @@ Usage:
 
 Options:
   --name <name>              Name shown in the NIP-46 connect request.
-  --policy <policy>          Repeatable. Supported now: evm-escrow, evm-auction, cashu-escrow.
+  --account <id>             Use a deterministic local account from data/seed/marketplace-seed.json.
+  --manifest <path>          Seed manifest used with --account. Defaults to data/seed/marketplace-seed.json.
+  --secret-key <hex>         Use a direct 32-byte hex Nostr secret key.
+  --policy <policy>          Repeatable. Supported: evm-escrow, evm-auction, cashu-escrow, cashu-auction.
   --relay <relay>            Repeatable. Defaults to ws://127.0.0.1:18080.
   --connect-timeout-ms <ms>  NIP-46 connect timeout. Defaults to 300000.
-  --no-service               Do not publish temporary escrow service events.
+  --no-service               Do not publish temporary arbitration service events.
   --help                     Print this help.
 `.trim()
 }
@@ -172,6 +188,9 @@ Options:
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     name: defaultName,
+    manifestPath: undefined,
+    secretKey: undefined,
+    account: undefined,
     policies: [],
     relays: [],
     connectTimeoutMs: 300_000,
@@ -186,6 +205,21 @@ function parseArgs(argv: string[]): CliArgs {
     switch (flag) {
       case '--name':
         args.name = value && value.length > 0 ? value : defaultName
+        if (consume) i += 1
+        break
+      case '--account':
+        if (!value) throw new Error('--account requires a value')
+        args.account = value
+        if (consume) i += 1
+        break
+      case '--manifest':
+        if (!value) throw new Error('--manifest requires a value')
+        args.manifestPath = resolve(nmdkDir, value)
+        if (consume) i += 1
+        break
+      case '--secret-key':
+        if (!value) throw new Error('--secret-key requires a value')
+        args.secretKey = value
         if (consume) i += 1
         break
       case '--policy':
@@ -218,6 +252,60 @@ function parseArgs(argv: string[]): CliArgs {
   }
   if (!args.help && args.policies.length === 0) throw new Error('At least one --policy is required')
   return args
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const normalized = hex.trim().replace(/^0x/i, '')
+  if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
+    throw new Error('Expected a 32-byte hex Nostr secret key')
+  }
+  return new Uint8Array(normalized.match(/../g)?.map(byte => Number.parseInt(byte, 16)) ?? [])
+}
+
+class LocalArbiterSigner implements ArbiterSigner {
+  private readonly pubkey: string
+
+  constructor(private readonly secretKey: Uint8Array) {
+    this.pubkey = getPublicKey(secretKey)
+  }
+
+  getPublicKey(): string {
+    return this.pubkey
+  }
+
+  signEvent(event: EventTemplate): VerifiedEvent {
+    return finalizeEvent(event, this.secretKey)
+  }
+
+  nip44Encrypt(pubkey: string, plaintext: string): string {
+    return nip44Encrypt(plaintext, getConversationKey(this.secretKey, pubkey))
+  }
+
+  nip44Decrypt(pubkey: string, ciphertext: string): string {
+    return nip44Decrypt(ciphertext, getConversationKey(this.secretKey, pubkey))
+  }
+}
+
+function secretKeyFromManifest(path: string, accountId: string): string {
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`Could not read arbiter seed manifest at ${path}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const accounts = typeof manifest === 'object' && manifest !== null
+    ? (manifest as Record<string, unknown>).accounts
+    : undefined
+  const account = typeof accounts === 'object' && accounts !== null
+    ? (accounts as Record<string, unknown>)[accountId]
+    : undefined
+  const privateKey = typeof account === 'object' && account !== null
+    ? (account as Record<string, unknown>).privateKey
+    : undefined
+  if (typeof privateKey !== 'string' || privateKey.length === 0) {
+    throw new Error(`Seed manifest ${path} does not contain account ${accountId}`)
+  }
+  return privateKey
 }
 
 function parseDotEnv(content: string): Record<string, string> {
@@ -306,6 +394,7 @@ function appConfigFromEnv(env: Record<string, string>, relays: string[]): AppCon
       chainId,
       chainName: envValue(env, 'VITE_EVM_CHAIN_NAME') ?? `EVM ${chainId || ''}`.trim(),
       rpcUrl,
+      blockExplorerUrl: envValue(env, 'VITE_EVM_BLOCK_EXPLORER_URL'),
       boltzApiUrl: envValue(env, 'VITE_EVM_BOLTZ_API_URL'),
       entryPointAddress: envAddress(env, 'VITE_EVM_ENTRY_POINT_ADDRESS'),
       accountFactoryAddress: envAddress(env, 'VITE_EVM_ACCOUNT_FACTORY_ADDRESS'),
@@ -418,7 +507,7 @@ function signerPerms(): string[] {
   ]
 }
 
-async function connectSigner(pool: SimplePool, relays: string[], args: CliArgs): Promise<BunkerSigner> {
+async function connectNip46Signer(pool: SimplePool, relays: string[], args: CliArgs): Promise<BunkerSigner> {
   const clientSecretKey = generateSecretKey()
   const clientPubkey = getPublicKey(clientSecretKey)
   const uri = createNostrConnectURI({
@@ -452,13 +541,33 @@ async function connectSigner(pool: SimplePool, relays: string[], args: CliArgs):
   }
 }
 
-function enableRelayAuth(pool: SimplePool, signer: BunkerSigner): void {
-  ;(pool as PoolWithAutomaticAuth).automaticallyAuth = () => event => signer.signEvent(event)
+function createDirectSigner(args: CliArgs, env: Record<string, string>): ArbiterSigner | undefined {
+  const rawSecretKey = args.secretKey ?? envValue(env, 'MARKETPLACE_ARBITER_SECRET_KEY')
+  if (rawSecretKey) return new LocalArbiterSigner(hexToBytes(rawSecretKey))
+  const account = args.account ?? envValue(env, 'MARKETPLACE_ARBITER_ACCOUNT')
+  if (!account) return undefined
+  const manifestPath = args.manifestPath ?? envValue(env, 'MARKETPLACE_ARBITER_MANIFEST') ?? defaultManifestPath
+  return new LocalArbiterSigner(hexToBytes(secretKeyFromManifest(manifestPath, account)))
 }
 
-async function authenticateRelays(pool: SimplePool, relays: string[], signer: BunkerSigner): Promise<void> {
+async function connectSigner(
+  pool: SimplePool,
+  relays: string[],
+  args: CliArgs,
+  env: Record<string, string>,
+): Promise<ArbiterSigner> {
+  const directSigner = createDirectSigner(args, env)
+  if (directSigner) return directSigner
+  return connectNip46Signer(pool, relays, args)
+}
+
+function enableRelayAuth(pool: SimplePool, signer: ArbiterSigner): void {
+  ;(pool as PoolWithAutomaticAuth).automaticallyAuth = () => event => Promise.resolve(signer.signEvent(event))
+}
+
+async function authenticateRelays(pool: SimplePool, relays: string[], signer: ArbiterSigner): Promise<void> {
   enableRelayAuth(pool, signer)
-  const signAuth = (event: EventTemplate) => signer.signEvent(event)
+  const signAuth = (event: EventTemplate) => Promise.resolve(signer.signEvent(event))
   const results = await Promise.allSettled(relays.map(async relayUrl => {
     const relay = await pool.ensureRelay(relayUrl)
     try {
@@ -492,11 +601,11 @@ function publishFailure(result: PromiseSettledResult<string>): string | undefine
 async function publishEvent(
   pool: SimplePool,
   relays: string[],
-  signer: BunkerSigner,
+  signer: ArbiterSigner,
   event: Event,
 ): Promise<void> {
   const results = await Promise.allSettled(pool.publish(relays, event, {
-    onauth: authEvent => signer.signEvent(authEvent),
+    onauth: authEvent => Promise.resolve(signer.signEvent(authEvent)),
   }))
   const failures = results.map(publishFailure).filter((failure): failure is string => failure !== undefined)
   if (failures.length === results.length) throw new Error(`Relay publish failed: ${failures.join('; ')}`)
@@ -519,7 +628,7 @@ function policyHashFor(policy: marketplace.MarketplacePaymentPolicy): string | u
 }
 
 async function publishServiceEvents(input: {
-  signer: BunkerSigner
+  signer: ArbiterSigner
   pubkey: string
   publish: (event: Event) => Promise<void>
   name: string
@@ -529,7 +638,7 @@ async function publishServiceEvents(input: {
   const now = Math.floor(Date.now() / 1000)
   const baseD = slug(input.name)
   const signAndPublish = async (template: EventTemplate) => {
-    const event = await input.signer.signEvent(template)
+    const event = await Promise.resolve(input.signer.signEvent(template))
     await input.publish(event)
   }
 
@@ -669,8 +778,8 @@ async function main(): Promise<void> {
   const build = buildPolicies(config, env, args.policies)
   const pool = new SimplePool({ enableReconnect: true })
   const createdEvents = new Map<string, Event>()
-  let signer: BunkerSigner | undefined
-  let escrowRuntime: marketplace.MarketplaceEscrowRuntime | undefined
+  let signer: ArbiterSigner | undefined
+  let arbitrationRuntime: marketplace.MarketplaceArbitrationRuntime | undefined
   let shuttingDown = false
 
   const publishTracked = async (event: Event): Promise<void> => {
@@ -684,7 +793,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     console.log('[arbiter] shutting down', { reason, createdEvents: createdEvents.size })
-    escrowRuntime?.close(reason)
+    arbitrationRuntime?.close(reason)
     if (signer && createdEvents.size > 0) {
       const events = [...createdEvents.values()]
       const deletion = await signer.signEvent({
@@ -700,7 +809,11 @@ async function main(): Promise<void> {
         console.warn('[arbiter] failed to publish deletion event', error)
       }
     }
-    await signer?.close().catch(() => undefined)
+    try {
+      await signer?.close?.()
+    } catch (_) {
+      // Signer close errors are non-fatal during daemon shutdown.
+    }
     pool.close(relays)
   }
 
@@ -722,8 +835,8 @@ async function main(): Promise<void> {
       bidPolicies: build.bidPolicies.map(policy => policy.id ?? policy.method),
     })
 
-    signer = await connectSigner(pool, relays, args)
-    const pubkey = await signer.getPublicKey()
+    signer = await connectSigner(pool, relays, args, env)
+    const pubkey = await Promise.resolve(signer.getPublicKey())
     await authenticateRelays(pool, relays, signer)
     console.log('[arbiter] signer connected', { pubkey, relays })
 
@@ -753,7 +866,7 @@ async function main(): Promise<void> {
       })
     }
 
-    escrowRuntime = runtime.escrow.start({
+    arbitrationRuntime = runtime.arbitration.start({
       autoAck: true,
       autoNack: true,
       onstate(event) {
@@ -764,6 +877,9 @@ async function main(): Promise<void> {
             group: event.group.id,
             payment: event.payment.event.id,
             status: event.validation.status,
+            ...(event.validation.error ? { error: event.validation.error } : {}),
+            ...(event.validation.amountMatched !== undefined ? { amountMatched: event.validation.amountMatched } : {}),
+            ...(event.validation.confirmations !== undefined ? { confirmations: event.validation.confirmations } : {}),
           })
         } else if (event.type === 'payment_ack_published' || event.type === 'payment_nack_published') {
           console.log('[arbiter] payment decision published', {
@@ -773,15 +889,15 @@ async function main(): Promise<void> {
             eventId: event.event.id,
           })
         } else if (event.type === 'error') {
-          console.warn('[arbiter] escrow watcher error', event.error)
+          console.warn('[arbiter] arbitration watcher error', event.error)
         } else if (event.type === 'eose') {
-          console.log('[arbiter] initial escrow subscription EOSE')
+          console.log('[arbiter] initial arbitration subscription EOSE')
         } else if (event.type === 'closed') {
-          console.log('[arbiter] escrow subscription closed', { reasons: event.reasons })
+          console.log('[arbiter] arbitration subscription closed', { reasons: event.reasons })
         }
       },
     })
-    console.log('[arbiter] escrow watcher started')
+    console.log('[arbiter] arbitration watcher started')
     await new Promise(() => undefined)
   } catch (error) {
     await cleanup('error')

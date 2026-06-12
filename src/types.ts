@@ -3,17 +3,6 @@ import type { SimplePool } from 'nostr-tools/pool'
 import type * as marketplace from 'nostr-tools/marketplace'
 import type { EvmMarketplacePolicyState } from '@sudonym-btc/marketplace-evm'
 
-export type AppRoute =
-  | { name: 'listings' }
-  | { name: 'auctions' }
-  | { name: 'my-listings' }
-  | { name: 'login' }
-  | { name: 'listing'; id: string }
-  | { name: 'inbox'; thread?: { conversation: string; participants: string[] } }
-  | { name: 'orders' }
-  | { name: 'edit-listing'; id?: string }
-  | { name: 'settings' }
-
 export type AppSession = {
   pubkey: string
   signer: AppSigner
@@ -41,34 +30,56 @@ export type NostrPublisher = {
   publish(event: Event): Promise<void>
 }
 
+export type MarketplaceClient = ReturnType<typeof marketplace.bind>
+export type MarketplaceSession = Awaited<ReturnType<typeof marketplace.session>>
+
 export type LoadedMarketplace = {
-  runtime: Awaited<ReturnType<typeof marketplace.session>>
+  runtime: MarketplaceSession
   nextTradeIndex: number
   evm?: EvmMarketplacePolicyState
 }
 
-export type InboxItem = {
-  wrap: Event
-  seal?: Event
-  rumor?: Event
-  error?: string
+export type MarketplaceLogItem = {
+  id: number
+  at: string
+  level: 'debug' | 'info' | 'warn' | 'error'
+  scope: string
+  span?: string
+  message: string
+  data?: Record<string, unknown>
+  error?: unknown
 }
+
+export type InboxItem = marketplace.MarketplaceInboxItem
 
 export type OrderBucket = {
   mine: marketplace.ParsedOrderGroup[]
   onMyListings: marketplace.ParsedOrderGroup[]
 }
 
+export type AuctionListingResolution = {
+  auction: marketplace.ParsedMarketplaceAuction
+  listing: marketplace.MarketplaceListing | null
+  snapshot?: marketplace.MarketplaceAuctionScopeSnapshot
+  error?: string
+}
+
+export type MyBidChainResolution = {
+  auction: marketplace.ParsedMarketplaceAuction
+  chain: marketplace.ParsedAuctionBidChain
+  listing: marketplace.MarketplaceListing | null
+  snapshot: marketplace.MarketplaceAuctionScopeSnapshot
+  error?: string
+}
+
 export type ListingFormValue = {
-  d: string
   title: string
-  summary: string
   description: string
   amount: string
   currency: string
   frequency: string
   location: string
-  image: string
+  images: string[]
   quantity: number
   active: boolean
   negotiable: boolean

@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 
+import { Alert, Button, Card, Input, Textarea } from '../components/ui'
+import { Eyebrow } from '../components/widgets/Eyebrow'
+import { Field } from '../components/widgets/FormField'
 import type { DemoAccountConfig } from '../config/appConfig'
 import { createNostrConnectRequest, loginWithBunker, loginWithNsec, loginWithNostrConnect } from '../nostr/session'
 import type { AppSession } from '../types'
@@ -57,59 +60,61 @@ export function LoginPage({ relays, nip46Relays, signetUrl, demoAccounts, loadin
   }
 
   return (
-    <section className="login-layout">
-      <div className="login-copy">
-        <span className="label">NIP-46</span>
-        <h1>Marketplace</h1>
-        <p>Sign in with a remote signer to publish listings, read private trade messages, and sign marketplace orders.</p>
+    <section className="grid min-h-dvh grid-cols-[minmax(0,1fr)_430px] items-center gap-10 p-12 max-[860px]:grid-cols-1">
+      <div>
+        <Eyebrow className="mb-3">NIP-46</Eyebrow>
+        <h1 className="text-5xl font-semibold leading-tight tracking-normal text-foreground">Marketplace</h1>
+        <p className="mt-4 max-w-2xl text-lg leading-8 text-muted-foreground">
+          Sign in with a remote signer to publish listings, read private trade messages, and sign marketplace orders.
+        </p>
       </div>
-      <div className="login-panel">
-        <label>
-          Bunker URI or NIP-05
-          <input
+      <Card className="grid gap-4 p-5">
+        <Field label="Bunker URI or NIP-05">
+          <Input
             value={bunkerInput}
             onChange={event => setBunkerInput(event.target.value)}
             placeholder="bunker://... or user@example.com"
           />
-        </label>
-        <button className="button" type="button" disabled={!bunkerInput || waiting || loading} onClick={bunkerLogin}>
+        </Field>
+        <Button disabled={!bunkerInput || waiting || loading} onClick={bunkerLogin}>
           Connect bunker
-        </button>
-        <div className="divider">or</div>
-        <button className="button secondary" type="button" disabled={waiting || loading} onClick={startNostrConnect}>
+        </Button>
+        <div className="text-center text-sm font-medium text-muted-foreground">or</div>
+        <Button disabled={waiting || loading} onClick={startNostrConnect} variant="secondary">
           Create Nostr Connect QR
-        </button>
+        </Button>
         {demoAccounts.length > 0 && (
           <>
-            <div className="divider">or</div>
-            <div className="demo-account-grid">
+            <div className="text-center text-sm font-medium text-muted-foreground">or</div>
+            <div className="grid grid-cols-2 gap-2 max-[520px]:grid-cols-1">
               {demoAccounts.map(account => (
-                <button
-                  className="button secondary"
+                <Button
                   key={account.id}
-                  type="button"
                   disabled={waiting || loading}
                   onClick={() => void demoLogin(account)}
+                  variant="secondary"
                 >
                   Login as {account.label}
-                </button>
+                </Button>
               ))}
             </div>
           </>
         )}
-        {error && <div className="notice error">{error}</div>}
+        {error && <Alert variant="destructive">{error}</Alert>}
         {connectUri && (
-          <div className="qr-panel">
+          <div className="grid justify-items-center gap-3">
             <QRCodeSVG value={connectUri} size={180} />
             {signetUrl && (
-              <a className="button secondary" href={signetUrl} target="_blank" rel="noreferrer">
-                Open Signet
-              </a>
+              <Button asChild variant="secondary">
+                <a href={signetUrl} target="_blank" rel="noreferrer">
+                  Open Signet
+                </a>
+              </Button>
             )}
-            <textarea readOnly value={connectUri} />
+            <Textarea className="h-20 min-h-20 text-xs" readOnly value={connectUri} />
           </div>
         )}
-      </div>
+      </Card>
     </section>
   )
 }

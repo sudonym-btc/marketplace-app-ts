@@ -1,46 +1,28 @@
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
-import { decode } from 'nostr-tools/nip19'
-import { decrypt, encrypt, getConversationKey } from 'nostr-tools/nip44'
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { getPublicKey } from 'nostr-tools/pure'
 import { SimplePool } from 'nostr-tools/pool'
 import {
   BunkerSigner,
   createNostrConnectURI,
   parseBunkerInput,
-  toBunkerURL,
   type BunkerPointer,
 } from 'nostr-tools/nip46'
 
 import type { AppSession, AppSigner, NostrPublisher } from '../types'
-import { bytesToHex, hexToBytes, randomHex } from '../utils/hex'
+import { randomHex } from '../utils/hex'
+import {
+  clearStoredSigner,
+  getOrCreateClientSecretKey,
+  restoreStoredSigner as restoreSignerFromStorage,
+  signerFromLocalSecret,
+  storeBunkerCredential,
+  storeLocalSecretCredential,
+} from './signerStorage'
 
-const clientKeyStorageKey = 'marketplace-app:nip46-client-key'
-const bunkerStorageKey = 'marketplace-app:bunker'
-const pubkeyStorageKey = 'marketplace-app:pubkey'
 const bunkerRequestTimeoutMs = 15_000
 
 type PoolWithAutomaticAuth = SimplePool & {
   automaticallyAuth?: (relayURL: string) => null | ((event: EventTemplate) => Promise<VerifiedEvent>)
-}
-
-class LocalNsecSigner implements AppSigner {
-  constructor(private readonly secretKey: Uint8Array) {}
-
-  async getPublicKey(): Promise<string> {
-    return getPublicKey(this.secretKey)
-  }
-
-  async nip44Encrypt(pubkey: string, plaintext: string): Promise<string> {
-    return encrypt(plaintext, getConversationKey(this.secretKey, pubkey))
-  }
-
-  async nip44Decrypt(pubkey: string, ciphertext: string): Promise<string> {
-    return decrypt(ciphertext, getConversationKey(this.secretKey, pubkey))
-  }
-
-  async signEvent(event: EventTemplate): Promise<VerifiedEvent> {
-    return finalizeEvent(event, this.secretKey)
-  }
 }
 
 export type NostrConnectRequest = {
@@ -62,14 +44,6 @@ function withBunkerTimeout<T>(promise: Promise<T>, action: string, timeoutMs = b
     timeout = setTimeout(() => reject(new BunkerSessionTimeoutError(action, timeoutMs)), timeoutMs)
   })
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout))
-}
-
-function getOrCreateClientSecretKey(): Uint8Array {
-  const stored = localStorage.getItem(clientKeyStorageKey)
-  if (stored) return hexToBytes(stored)
-  const secretKey = generateSecretKey()
-  localStorage.setItem(clientKeyStorageKey, bytesToHex(secretKey))
-  return secretKey
 }
 
 export function createNostrConnectRequest(relays: string[]): NostrConnectRequest {
@@ -170,18 +144,14 @@ async function connectAndAuthenticateRelays(pool: SimplePool, relays: string[], 
   })
 }
 
-export async function loginWithNsec(nsec: string, relays: string[]): Promise<AppSession> {
-  console.debug('[marketplace-app] logging in with local nsec', { relayCount: relays.length })
-  const decoded = decode(nsec.trim())
-  if (decoded.type !== 'nsec') throw new Error('Demo login requires an nsec key')
+export async function loginWithNsec(secret: string, relays: string[]): Promise<AppSession> {
+  console.debug('[marketplace-app] logging in with local secret signer', { relayCount: relays.length })
   const pool = new SimplePool()
-  const signer = new LocalNsecSigner(decoded.data)
+  const { pubkey, signer } = await signerFromLocalSecret(secret)
   try {
-    const pubkey = await signer.getPublicKey()
     await withBunkerTimeout(connectAndAuthenticateRelays(pool, relays, signer), 'Local signer relay authentication')
-    localStorage.removeItem(bunkerStorageKey)
-    localStorage.setItem(pubkeyStorageKey, pubkey)
-    console.debug('[marketplace-app] local nsec login complete', { pubkey, relayCount: relays.length })
+    storeLocalSecretCredential(secret, pubkey)
+    console.debug('[marketplace-app] local secret signer login complete', { pubkey, relayCount: relays.length })
     return { pubkey, signer, pool, relays }
   } catch (err) {
     pool.close(relays)
@@ -196,8 +166,7 @@ export async function loginWithNostrConnect(uri: string, relays: string[]): Prom
     const signer = await BunkerSigner.fromURI(getOrCreateClientSecretKey(), uri, { pool, skipSwitchRelays: true })
     const pubkey = await withBunkerTimeout(signer.getPublicKey(), 'Nostr Connect signer handshake')
     await withBunkerTimeout(connectAndAuthenticateRelays(pool, relays, signer), 'Bunker relay authentication')
-    localStorage.setItem(bunkerStorageKey, toBunkerURL(signer.bp))
-    localStorage.setItem(pubkeyStorageKey, pubkey)
+    storeBunkerCredential(signer.bp, pubkey)
     console.debug('[marketplace-app] nostrconnect login complete', { pubkey, relayCount: relays.length })
     return { pubkey, signer, pool, relays }
   } catch (err) {
@@ -217,8 +186,7 @@ export async function loginWithBunker(input: string, relays: string[]): Promise<
     await withBunkerTimeout(signer.connect(), 'Bunker connect')
     const pubkey = await withBunkerTimeout(signer.getPublicKey(), 'Bunker public key request')
     await withBunkerTimeout(connectAndAuthenticateRelays(pool, relays, signer), 'Bunker relay authentication')
-    localStorage.setItem(bunkerStorageKey, toBunkerURL(scopedPointer))
-    localStorage.setItem(pubkeyStorageKey, pubkey)
+    storeBunkerCredential(scopedPointer, pubkey)
     console.debug('[marketplace-app] bunker login complete', { pubkey, relayCount: relays.length })
     return { pubkey, signer, pool, relays }
   } catch (err) {
@@ -227,26 +195,22 @@ export async function loginWithBunker(input: string, relays: string[]): Promise<
   }
 }
 
-export async function restoreBunkerSession(relays: string[]): Promise<AppSession | null> {
-  console.debug('[marketplace-app] attempting to restore bunker session', { relayCount: relays.length })
-  const stored = localStorage.getItem(bunkerStorageKey)
-  if (!stored) {
-    console.debug('[marketplace-app] no bunker session to restore')
-    return null
-  }
-  const pointer = await parseBunkerInput(stored)
-  if (!pointer) {
-    console.warn('[marketplace-app] stored bunker session could not be parsed')
-    return null
-  }
-  const scopedPointer = { ...pointer, relays }
+export async function restoreStoredSession(relays: string[]): Promise<AppSession | null> {
+  console.debug('[marketplace-app] attempting to restore stored signer session', { relayCount: relays.length })
   const pool = new SimplePool()
-  const signer = BunkerSigner.fromBunker(getOrCreateClientSecretKey(), scopedPointer as BunkerPointer, { pool })
   try {
-    const pubkey = await withBunkerTimeout(signer.getPublicKey(), 'Bunker reconnect')
+    const restored = await withBunkerTimeout(
+      restoreSignerFromStorage(pool, relays, getOrCreateClientSecretKey()),
+      'Saved signer reconnect',
+    )
+    if (!restored) {
+      pool.close(relays)
+      console.debug('[marketplace-app] no stored signer session to restore')
+      return null
+    }
+    const { pubkey, signer } = restored
     await withBunkerTimeout(connectAndAuthenticateRelays(pool, relays, signer), 'Bunker relay authentication')
-    localStorage.setItem(pubkeyStorageKey, pubkey)
-    console.debug('[marketplace-app] restored bunker session', { pubkey, relayCount: relays.length })
+    console.debug('[marketplace-app] restored signer session', { pubkey, relayCount: relays.length })
     return { pubkey, signer, pool, relays }
   } catch (err) {
     pool.close(relays)
@@ -255,10 +219,8 @@ export async function restoreBunkerSession(relays: string[]): Promise<AppSession
 }
 
 export function clearStoredSession(): void {
-  console.debug('[marketplace-app] clearing stored NIP-46 session')
-  localStorage.removeItem(bunkerStorageKey)
-  localStorage.removeItem(pubkeyStorageKey)
-  localStorage.removeItem(clientKeyStorageKey)
+  console.debug('[marketplace-app] clearing stored signer session')
+  clearStoredSigner()
 }
 
 export function logout(session?: AppSession): void {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import * as marketplace from 'nostr-tools/marketplace'
 import { SimplePool } from 'nostr-tools/pool'
 import { createCashuAuctionPolicy, createCashuEscrowPolicy } from '@sudonym-btc/marketplace-cashu'
@@ -8,64 +8,161 @@ import { loadAppConfig, type AppConfig } from '../config/appConfig'
 import { LocalCashuEscrowStore } from '../cashu/storage'
 import { createEvmChainConfigs } from '../evm/config'
 import { LocalOperationStore } from '../evm/operationStore'
-import {
-  fetchAuctionRows,
-  fetchGiftWraps,
-  fetchListings,
-  fetchOrderBuckets,
-  type AuctionListingResolution,
-} from '../nostr/marketplaceApi'
-import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreBunkerSession } from '../nostr/session'
-import type { AppRoute, AppSession, InboxItem, LoadedMarketplace, OrderBucket, SessionRestoreError } from '../types'
-import { unwrapGiftWrapWithSigner } from '../nostr/giftwrap'
-import { routeFromHash } from './routing'
+import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreStoredSession } from '../nostr/session'
+import type { AppSession, LoadedMarketplace, MarketplaceLogItem, SessionRestoreError } from '../types'
+import { createAppLocationProvider } from '../nostr/locationProvider'
 
 export type AppState = {
   config: AppConfig
-  route: AppRoute
   session?: AppSession
   publicMarketplace: ReturnType<typeof marketplace.bind>
   marketplace?: LoadedMarketplace
-  listings: marketplace.MarketplaceListing[]
-  auctionRows: AuctionListingResolution[]
-  inbox: InboxItem[]
-  orders: OrderBucket
+  refreshRevision: number
+  marketplaceLog: MarketplaceLogItem[]
   loading: boolean
+  restoringSigner: boolean
   status: string
   error?: string
   sessionError?: SessionRestoreError
 }
 
-const emptyOrders: OrderBucket = { mine: [], onMyListings: [] }
+type AppLoggerContext = {
+  scope?: string
+  span?: string
+  data?: Record<string, unknown>
+}
+
+function mergeLogData(
+  base?: Record<string, unknown>,
+  next?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!base && !next) return undefined
+  return {
+    ...(base ?? {}),
+    ...(next ?? {}),
+  }
+}
+
+function isPromiseLike<Result>(value: Result): value is Result & PromiseLike<unknown> {
+  return Boolean(value && typeof value === 'object' && 'then' in value && typeof value.then === 'function')
+}
+
+function asMarketplaceOrderPolicy(policy: unknown): marketplace.MarketplaceOrderPolicy {
+  return policy as marketplace.MarketplaceOrderPolicy
+}
+
+function asMarketplaceBidPolicy(policy: unknown): marketplace.MarketplaceBidPolicy {
+  return policy as marketplace.MarketplaceBidPolicy
+}
 
 export function useAppState() {
   const [config] = useState(loadAppConfig)
   const [publicPool] = useState(() => new SimplePool())
-  const [route, setRoute] = useState<AppRoute>(() => routeFromHash())
   const [session, setSession] = useState<AppSession>()
   const [loadedMarketplace, setLoadedMarketplace] = useState<LoadedMarketplace>()
-  const [listings, setListings] = useState<marketplace.MarketplaceListing[]>([])
-  const [auctionRows, setAuctionRows] = useState<AuctionListingResolution[]>([])
-  const [inbox, setInbox] = useState<InboxItem[]>([])
-  const [orders, setOrders] = useState<OrderBucket>(emptyOrders)
+  const [refreshRevision, setRefreshRevision] = useState(0)
+  const [marketplaceLog, setMarketplaceLog] = useState<MarketplaceLogItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [restoringSigner, setRestoringSigner] = useState(false)
   const [status, setStatus] = useState('Ready')
   const [error, setError] = useState<string>()
   const [sessionError, setSessionError] = useState<SessionRestoreError>()
+  const nextLogId = useRef(0)
 
-  useEffect(() => {
-    const onHashChange = () => setRoute(routeFromHash())
-    window.addEventListener('hashchange', onHashChange)
-    return () => window.removeEventListener('hashchange', onHashChange)
+  const appendMarketplaceLog = useCallback((
+    entry: Omit<MarketplaceLogItem, 'id' | 'at'> & { at?: string | number | Date },
+  ) => {
+    const at = entry.at instanceof Date
+      ? entry.at.toISOString()
+      : typeof entry.at === 'number'
+        ? new Date(entry.at).toISOString()
+        : entry.at ?? new Date().toISOString()
+    setMarketplaceLog(current => [
+      {
+        id: nextLogId.current++,
+        at,
+        level: entry.level,
+        scope: entry.scope || 'marketplace',
+        ...(entry.span ? { span: entry.span } : {}),
+        message: entry.message,
+        ...(entry.data ? { data: entry.data } : {}),
+        ...(entry.error ? { error: entry.error } : {}),
+      },
+      ...current,
+    ].slice(0, 300))
   }, [])
+
+  const marketplaceLogger = useMemo<NonNullable<marketplace.MarketplaceRuntimeOptions['logger']>>(() => {
+    const createLogger = (context: AppLoggerContext = {}): NonNullable<marketplace.MarketplaceRuntimeOptions['logger']> => {
+      const emit = (
+        level: MarketplaceLogItem['level'],
+        message: string,
+        data?: Record<string, unknown>,
+        error?: unknown,
+      ) => {
+        const mergedData = mergeLogData(context.data, data)
+        appendMarketplaceLog({
+          level,
+          scope: context.scope ?? 'marketplace',
+          ...(context.span ? { span: context.span } : {}),
+          message,
+          ...(mergedData ? { data: mergedData } : {}),
+          ...(error ? { error } : {}),
+        })
+      }
+
+      return {
+        debug: (message, data, error) => emit('debug', message, data, error),
+        info: (message, data, error) => emit('info', message, data, error),
+        warn: (message, data, error) => emit('warn', message, data, error),
+        error: (message, data, error) => emit('error', message, data, error),
+        child: nextContext => createLogger({
+          scope: nextContext.scope ?? context.scope,
+          span: nextContext.span ?? context.span,
+          data: mergeLogData(context.data, nextContext.data),
+        }),
+        span: (name, data, run) => {
+          const spanLogger = createLogger({
+            ...context,
+            span: name,
+            data: mergeLogData(context.data, data),
+          })
+          spanLogger.debug('Span started')
+          try {
+            const result = run(spanLogger)
+            if (isPromiseLike(result)) {
+              return result.then(
+                value => {
+                  spanLogger.debug('Span completed')
+                  return value
+                },
+                reason => {
+                  spanLogger.error('Span failed', undefined, reason)
+                  throw reason
+                },
+              ) as typeof result
+            }
+            spanLogger.debug('Span completed')
+            return result
+          } catch (reason) {
+            spanLogger.error('Span failed', undefined, reason)
+            throw reason
+          }
+        },
+      }
+    }
+
+    return createLogger({ scope: 'marketplace.app' })
+  }, [appendMarketplaceLog])
 
   const publicReader = useMemo(
     () => ({ pool: publicPool, relays: config.relays }),
     [config.relays, publicPool],
   )
+  const locationProvider = useMemo(() => createAppLocationProvider(), [])
   const publicMarketplace = useMemo(
-    () => marketplace.bind(publicReader.pool, publicReader.relays),
-    [publicReader],
+    () => marketplace.bind(publicReader.pool, publicReader.relays, { logger: marketplaceLogger, locationProvider }),
+    [locationProvider, marketplaceLogger, publicReader],
   )
   const appPublisher = useMemo(() => (session ? publisher(session) : undefined), [session])
 
@@ -85,6 +182,7 @@ export function useAppState() {
             chains: evmChains,
             operationStore: new LocalOperationStore(),
             appId: 'marketplace',
+            logger: marketplaceLogger,
           })
         : null
       const evmAuctionPolicy = evmChains.length > 0
@@ -92,6 +190,7 @@ export function useAppState() {
             chains: evmChains,
             operationStore: new LocalOperationStore(),
             appId: 'marketplace',
+            logger: marketplaceLogger,
           })
         : null
       const cashuEscrowPolicy = config.cashu.enabled
@@ -99,6 +198,7 @@ export function useAppState() {
             mints: config.cashu.mints,
             storage: cashuStorage,
             appId: 'marketplace',
+            logger: marketplaceLogger,
           })
         : null
       const cashuAuctionPolicy = config.cashu.enabled
@@ -106,12 +206,13 @@ export function useAppState() {
             mints: config.cashu.mints,
             storage: cashuStorage,
             appId: 'marketplace',
+            logger: marketplaceLogger,
           })
         : null
-      if (evmEscrowPolicy) orderPolicies.push(evmEscrowPolicy)
-      if (evmAuctionPolicy) bidPolicies.push(evmAuctionPolicy)
-      if (cashuEscrowPolicy) orderPolicies.push(cashuEscrowPolicy)
-      if (cashuAuctionPolicy) bidPolicies.push(cashuAuctionPolicy)
+      if (evmEscrowPolicy) orderPolicies.push(asMarketplaceOrderPolicy(evmEscrowPolicy))
+      if (evmAuctionPolicy) bidPolicies.push(asMarketplaceBidPolicy(evmAuctionPolicy))
+      if (cashuEscrowPolicy) orderPolicies.push(asMarketplaceOrderPolicy(cashuEscrowPolicy))
+      if (cashuAuctionPolicy) bidPolicies.push(asMarketplaceBidPolicy(cashuAuctionPolicy))
       console.debug('[marketplace-app] marketplace payment policies configured', {
         orderPolicyCount: orderPolicies.length,
         bidPolicyCount: bidPolicies.length,
@@ -126,8 +227,10 @@ export function useAppState() {
         pubkey: nextSession.pubkey,
         orderPolicies,
         bidPolicies,
-        autoTrustEscrow: config.autoTrustEscrowPubkeys,
+        autoTrustArbiter: config.autoTrustArbiterPubkeys,
         publish: event => pub.publish(event),
+        locationProvider,
+        logger: marketplaceLogger,
       })
       console.debug('[marketplace-app] marketplace runtime initialized', {
         seedCreated: runtime.seed.created,
@@ -163,86 +266,15 @@ export function useAppState() {
       })
       return loaded
     },
-    [config],
+    [config, locationProvider, marketplaceLogger],
   )
-
-  const loadPublicListings = useCallback(async () => {
-    console.debug('[marketplace-app] loading public listings')
-    const [nextListings, nextAuctionRows] = await Promise.all([
-      fetchListings(publicReader),
-      fetchAuctionRows(publicReader, publicMarketplace),
-    ])
-    setListings(nextListings)
-    setAuctionRows(nextAuctionRows)
-    console.debug('[marketplace-app] public listings loaded', {
-      listingCount: nextListings.length,
-      auctionCount: nextAuctionRows.length,
-    })
-    return nextListings
-  }, [publicMarketplace, publicReader])
-
-  const refreshListings = useCallback(async () => {
-    console.debug('[marketplace-app] refreshing listings')
-    const nextListings = await fetchListings(session ?? publicReader)
-    setListings(nextListings)
-    console.debug('[marketplace-app] listings refreshed', { listingCount: nextListings.length })
-  }, [publicReader, session])
-
-  const refreshInbox = useCallback(async () => {
-    if (!session) return
-    console.debug('[marketplace-app] refreshing inbox')
-    const wraps = await fetchGiftWraps(session)
-    const items = await Promise.all(wraps.map(wrap => unwrapGiftWrapWithSigner(wrap, session.signer)))
-    const failedCount = items.filter(item => item.error).length
-    if (failedCount > 0) {
-      console.warn('[marketplace-app] some inbox items failed to unwrap', { failedCount, total: items.length })
-    }
-    setInbox(items)
-    console.debug('[marketplace-app] inbox refreshed', { wrapCount: wraps.length, itemCount: items.length })
-  }, [session])
-
-  const refreshOrders = useCallback(async () => {
-    if (!loadedMarketplace) return
-    console.debug('[marketplace-app] refreshing orders')
-    const nextOrders = await fetchOrderBuckets(loadedMarketplace.runtime)
-    setOrders(nextOrders)
-    console.debug('[marketplace-app] orders refreshed', {
-      mineCount: nextOrders.mine.length,
-      onMyListingsCount: nextOrders.onMyListings.length,
-    })
-  }, [loadedMarketplace])
 
   const refreshAll = useCallback(async () => {
     setLoading(true)
     setError(undefined)
     try {
-      if (!session) {
-        setStatus('Refreshing public listings')
-        await loadPublicListings()
-        setStatus('Ready')
-        return
-      }
       setStatus('Refreshing marketplace data')
-      const auctionRuntime = loadedMarketplace?.runtime ?? publicMarketplace
-      const [nextListings, wraps, nextAuctionRows] = await Promise.all([
-        fetchListings(session),
-        fetchGiftWraps(session),
-        fetchAuctionRows(session, auctionRuntime),
-      ])
-      const nextOrders = loadedMarketplace
-        ? await fetchOrderBuckets(loadedMarketplace.runtime)
-        : emptyOrders
-      setListings(nextListings)
-      setAuctionRows(nextAuctionRows)
-      setInbox(await Promise.all(wraps.map(wrap => unwrapGiftWrapWithSigner(wrap, session.signer))))
-      setOrders(nextOrders)
-      console.debug('[marketplace-app] marketplace data refreshed', {
-        listingCount: nextListings.length,
-        auctionCount: nextAuctionRows.length,
-        inboxCount: wraps.length,
-        mineOrderCount: nextOrders.mine.length,
-        onMyListingsCount: nextOrders.onMyListings.length,
-      })
+      setRefreshRevision(current => current + 1)
       setStatus('Ready')
     } catch (err) {
       console.warn('[marketplace-app] refresh failed', err)
@@ -250,7 +282,7 @@ export function useAppState() {
     } finally {
       setLoading(false)
     }
-  }, [loadPublicListings, loadedMarketplace, publicMarketplace, session])
+  }, [])
 
   const markTradeIndexUsed = useCallback((index: number) => {
     console.debug('[marketplace-app] marking trade index used', { index })
@@ -273,23 +305,9 @@ export function useAppState() {
         setSession(nextSession)
         setSessionError(undefined)
         const nextMarketplace = await initializeMarketplace(nextSession)
-        setStatus('Loading marketplace data')
-        const [nextListings, wraps, nextAuctionRows] = await Promise.all([
-          fetchListings(nextSession),
-          fetchGiftWraps(nextSession),
-          fetchAuctionRows(nextSession, nextMarketplace.runtime),
-        ])
-        const nextOrders = await fetchOrderBuckets(nextMarketplace.runtime)
-        setListings(nextListings)
-        setAuctionRows(nextAuctionRows)
-        setInbox(await Promise.all(wraps.map(wrap => unwrapGiftWrapWithSigner(wrap, nextSession.signer))))
-        setOrders(nextOrders)
-        console.debug('[marketplace-app] session attached and marketplace data loaded', {
-          listingCount: nextListings.length,
-          auctionCount: nextAuctionRows.length,
-          wrapCount: wraps.length,
-          mineOrderCount: nextOrders.mine.length,
-          onMyListingsCount: nextOrders.onMyListings.length,
+        setRefreshRevision(current => current + 1)
+        console.debug('[marketplace-app] session attached and marketplace runtime ready', {
+          nextTradeIndex: nextMarketplace.nextTradeIndex,
         })
         setStatus('Ready')
       } catch (err) {
@@ -304,45 +322,39 @@ export function useAppState() {
 
   const restore = useCallback(async () => {
     setLoading(true)
+    setRestoringSigner(true)
     setError(undefined)
     setSessionError(undefined)
-    setStatus('Reconnecting bunker session')
+    setStatus('Restoring signer')
     try {
-      const restored = await restoreBunkerSession(config.relays)
+      const restored = await restoreStoredSession(config.relays)
       if (restored) await attachSession(restored)
       else console.debug('[marketplace-app] no restored session found')
       if (!restored) {
-        setStatus('Loading public listings')
-        await loadPublicListings()
+        setRefreshRevision(current => current + 1)
         setStatus('Ready')
       }
     } catch (err) {
       const timedOut = isBunkerSessionTimeout(err)
-      const message = err instanceof Error ? err.message : 'Saved bunker session could not be restored'
+      const message = err instanceof Error ? err.message : 'Saved signer session could not be restored'
       console.warn('[marketplace-app] session restore failed', err)
       setSession(undefined)
       setLoadedMarketplace(undefined)
       setSessionError({
-        title: timedOut ? 'Bunker reconnect timed out' : 'Bunker reconnect failed',
+        title: timedOut ? 'Signer reconnect timed out' : 'Signer restore failed',
         message: timedOut
-          ? 'Marketplace found a saved NIP-46 session, but the remote signer did not answer in time.'
-          : 'Marketplace found a saved NIP-46 session, but it could not be restored.',
+          ? 'Marketplace found a saved signer, but it did not answer in time.'
+          : 'Marketplace found a saved signer, but it could not be restored.',
         detail: message,
         timedOut,
       })
-      try {
-        setStatus('Loading public listings')
-        await loadPublicListings()
-        setStatus(timedOut ? 'Bunker reconnect timed out' : 'Bunker reconnect failed')
-      } catch (publicErr) {
-        console.warn('[marketplace-app] public listing load failed after session restore error', publicErr)
-        setError(publicErr instanceof Error ? publicErr.message : 'Unable to load public listings')
-        setStatus(timedOut ? 'Bunker reconnect timed out' : 'Bunker reconnect failed')
-      }
+      setRefreshRevision(current => current + 1)
+      setStatus(timedOut ? 'Signer reconnect timed out' : 'Signer restore failed')
     } finally {
       setLoading(false)
+      setRestoringSigner(false)
     }
-  }, [attachSession, config.relays, loadPublicListings])
+  }, [attachSession, config.relays])
 
   const clearSession = useCallback(() => {
     console.debug('[marketplace-app] clearing active marketplace session')
@@ -350,27 +362,26 @@ export function useAppState() {
     clearStoredSession()
     setSession(undefined)
     setLoadedMarketplace(undefined)
-    setInbox([])
-    setOrders(emptyOrders)
-    setAuctionRows([])
     setError(undefined)
     setSessionError(undefined)
+    setRefreshRevision(current => current + 1)
     setStatus('Ready')
-    void loadPublicListings()
-  }, [loadPublicListings, session])
+  }, [session])
+
+  const clearMarketplaceLog = useCallback(() => {
+    setMarketplaceLog([])
+  }, [])
 
   return {
     state: {
       config,
-      route,
       session,
       publicMarketplace,
       marketplace: loadedMarketplace,
-      listings,
-      auctionRows,
-      inbox,
-      orders,
+      refreshRevision,
+      marketplaceLog,
       loading,
+      restoringSigner,
       status,
       error,
       sessionError,
@@ -379,14 +390,12 @@ export function useAppState() {
     actions: {
       attachSession,
       refreshAll,
-      refreshListings,
-      refreshInbox,
-      refreshOrders,
       restore,
       clearSession,
       setError,
       setStatus,
       markTradeIndexUsed,
+      clearMarketplaceLog,
     },
   }
 }

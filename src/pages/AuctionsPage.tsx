@@ -1,138 +1,115 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import * as marketplaceSdk from 'nostr-tools/marketplace'
 
+import { CodeHint } from '../codeHints/codeHints'
 import { EmptyState } from '../components/EmptyState'
-import { formatPrice } from '../components/ListingCard'
-import type { AuctionListingResolution } from '../nostr/marketplaceApi'
-import { routeHref } from '../state/routing'
+import { AuctionCard } from '../components/widgets/AuctionCard'
+import { Page, PageHeader } from '../components/widgets/PageLayout'
+import { ScrollBatchStatus } from '../components/widgets/ScrollBatchStatus'
+import { useScrollBatch } from '../hooks/useScrollBatch'
+import type { AuctionListingResolution } from '../types'
 
 type Props = {
+  marketplace: ReturnType<typeof marketplaceSdk.bind>
   rows: AuctionListingResolution[]
+  loading?: boolean
+  error?: string
 }
 
-const pageSize = 10
-
-function shortPubkey(pubkey: string): string {
-  return `${pubkey.slice(0, 8)}...${pubkey.slice(-6)}`
-}
-
-function formatDateTime(seconds?: number): string {
-  if (!seconds) return 'Not scheduled'
-  return new Date(seconds * 1000).toLocaleString()
-}
-
-function formatUnits(value: string | undefined, decimals: number): string {
-  if (!value) return 'None'
-  try {
-    const units = BigInt(value)
-    if (decimals <= 0) return units.toString()
-    const scale = 10n ** BigInt(decimals)
-    const whole = units / scale
-    const fraction = (units % scale).toString().padStart(decimals, '0').replace(/0+$/, '')
-    return fraction ? `${whole}.${fraction}` : whole.toString()
-  } catch {
-    return value
-  }
-}
-
-function auctionStatus(auction: AuctionListingResolution['auction']): string {
-  const now = Math.floor(Date.now() / 1000)
-  if (auction.endAt && now >= auction.endAt) return 'Ended'
-  if (auction.startAt && now < auction.startAt) return 'Scheduled'
-  return 'Live'
-}
-
-export function AuctionsPage({ rows }: Props) {
-  const [page, setPage] = useState(1)
-  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
-  const visibleRows = rows.slice((page - 1) * pageSize, page * pageSize)
+export function AuctionsPage({ marketplace, rows, loading = false, error }: Props) {
+  const { hasMore, loadNextBatch, sentinelRef, visibleCount } = useScrollBatch(rows.length, { batchSize: 4 })
+  const visibleRows = rows.slice(0, visibleCount)
+  const [liveSnapshots, setLiveSnapshots] = useState<Record<string, marketplaceSdk.MarketplaceAuctionScopeSnapshot>>({})
+  const [eoseByAuction, setEoseByAuction] = useState<Record<string, boolean>>({})
+  const visibleAnchors = useMemo(
+    () => visibleRows.map(row => row.auction.auctionAnchor).join('|'),
+    [visibleRows],
+  )
 
   useEffect(() => {
-    setPage(current => Math.min(current, pageCount))
-  }, [pageCount])
+    setLiveSnapshots(Object.fromEntries(
+      rows
+        .filter((row): row is AuctionListingResolution & { snapshot: marketplaceSdk.MarketplaceAuctionScopeSnapshot } =>
+          Boolean(row.snapshot),
+        )
+        .map(row => [row.auction.auctionAnchor, row.snapshot]),
+    ))
+    setEoseByAuction({})
+  }, [rows])
+
+  useEffect(() => {
+    const closers = visibleRows.map(row => {
+      const anchor = row.auction.auctionAnchor
+      const stream = marketplace.auctions.scope({ auctionAnchor: anchor }).stream({ maxWait: 2500 })
+      const snapshotSubscription = stream.snapshot.subscribe(snapshot => {
+        setLiveSnapshots(current => ({
+          ...current,
+          [anchor]: snapshot,
+        }))
+      })
+      const statusSubscription = stream.status.subscribe(status => {
+        if (status instanceof marketplaceSdk.StreamEose || status instanceof marketplaceSdk.StreamLive) {
+          setEoseByAuction(current => ({
+            ...current,
+            [anchor]: true,
+          }))
+        }
+      })
+      return {
+        close(reason?: string) {
+          snapshotSubscription.unsubscribe()
+          statusSubscription.unsubscribe()
+          stream.close(reason)
+        },
+      }
+    })
+    return () => {
+      for (const closer of closers) closer.close('auction page scope changed')
+    }
+  }, [marketplace, visibleAnchors])
 
   return (
-    <section className="page">
-      <div className="page-heading">
-        <div>
-          <span className="label">Auctions</span>
-          <h1>Auctions</h1>
-        </div>
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState title="No auctions loaded" body="Refresh relays or schedule an auction from one of your listings." />
-      ) : (
-        <>
-          <div className="auction-list">
-            {visibleRows.map(row => {
-              const { auction, listing } = row
-              const content = (
-                <>
-                  <div className="auction-card-heading">
-                    <div>
-                      <strong>{listing?.title ?? 'Unresolved listing'}</strong>
-                      <span>{auction.currency} {auction.auctionType ?? 'english'} auction</span>
-                    </div>
-                    <span className="status-pill">{auctionStatus(auction)}</span>
-                  </div>
-                  {listing && <p className="muted">{listing.summary || listing.description}</p>}
-                  <dl className="auction-facts">
-                    <div>
-                      <dt>Listing price</dt>
-                      <dd>{listing ? formatPrice(listing.prices[0]) : 'Not loaded'}</dd>
-                    </div>
-                    <div>
-                      <dt>Starting bid</dt>
-                      <dd>{formatUnits(auction.startingBid, auction.decimals)} {auction.currency}</dd>
-                    </div>
-                    <div>
-                      <dt>Starts</dt>
-                      <dd>{formatDateTime(auction.startAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Ends</dt>
-                      <dd>{formatDateTime(auction.endAt)}</dd>
-                    </div>
-                    <div>
-                      <dt>Arbiter</dt>
-                      <dd>{shortPubkey(auction.arbiterPubkey)}</dd>
-                    </div>
-                  </dl>
-                  <div className="auction-actions">
-                    {listing ? <span>Open listing to bid</span> : <span>{row.error ?? 'Listing event not loaded'}</span>}
-                  </div>
-                </>
-              )
-              return listing ? (
-                <a
-                  className="auction-card auction-card-link"
-                  href={routeHref({ name: 'listing', id: listing.event.id })}
-                  key={auction.auctionAnchor}
-                >
-                  {content}
-                </a>
-              ) : (
-                <article className="auction-card" key={auction.auctionAnchor}>
-                  {content}
-                </article>
-              )
-            })}
-          </div>
-          <div className="pagination-controls">
-            <button className="button secondary" type="button" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              Previous
-            </button>
-            <span>Page {page} of {pageCount}</span>
-            <button
-              className="button secondary"
-              type="button"
-              disabled={page >= pageCount}
-              onClick={() => setPage(page + 1)}
-            >
-              Next
-            </button>
-          </div>
-        </>
-      )}
-    </section>
+    <Page>
+      <PageHeader eyebrow="Auctions" title="Auctions" />
+      <CodeHint
+        code={[
+          'marketplace.auctions.scope({ auctionAnchor }).query({ maxWait: 2500 })',
+          'marketplace.auctions.scope({ auctionAnchor }).stream({ maxWait: 2500 })',
+          'auctionScope.filter(marketplace.auctionScopes.isBid)',
+        ]}
+        className="rounded-xl"
+      >
+        {rows.length === 0 ? (
+          <EmptyState
+            title={error ? 'Unable to load auctions' : loading ? 'Loading auctions' : 'No auctions loaded'}
+            body={error ?? (loading ? 'Checking marketplace relays.' : 'Refresh relays or schedule an auction from one of your listings.')}
+          />
+        ) : (
+          <>
+            <div className="grid gap-4">
+              {visibleRows.map(row => {
+                const snapshot = liveSnapshots[row.auction.auctionAnchor] ?? row.snapshot
+                return (
+                  <AuctionCard
+                    backfillComplete={Boolean(eoseByAuction[row.auction.auctionAnchor])}
+                    key={row.auction.auctionAnchor}
+                    row={row}
+                    snapshot={snapshot}
+                  />
+                )
+              })}
+            </div>
+            <ScrollBatchStatus
+              ref={sentinelRef}
+              hasMore={hasMore}
+              itemLabel="auctions"
+              onLoadMore={loadNextBatch}
+              totalCount={rows.length}
+              visibleCount={visibleCount}
+            />
+          </>
+        )}
+      </CodeHint>
+    </Page>
   )
 }

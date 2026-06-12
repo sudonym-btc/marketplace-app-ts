@@ -10,9 +10,9 @@ export function latestOrder(group: marketplace.ParsedOrderGroup): marketplace.Pa
   }, undefined)
 }
 
-export function escrowPubkeyForOrderGroup(group: marketplace.ParsedOrderGroup): string | undefined {
-  return group.escrowPubkeys[0] ??
-    group.participants.find(participant => participant.role === 'escrow')?.pubkey
+export function arbiterPubkeyForOrderGroup(group: marketplace.ParsedOrderGroup): string | undefined {
+  return group.arbiterPubkeys[0] ??
+    group.participants.find(participant => participant.role === 'arbiter')?.pubkey
 }
 
 export function orderGroupCancellable(group: marketplace.ParsedOrderGroup): boolean {

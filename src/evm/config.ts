@@ -9,7 +9,9 @@ export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainCon
       id: `evm-${config.evm.chainId}`,
       chainId: config.evm.chainId,
       name: config.evm.chainName,
+      ...(config.evm.boltzCurrency ? { boltzCurrency: config.evm.boltzCurrency } : {}),
       rpcUrl: config.evm.rpcUrl,
+      ...(config.evm.blockExplorerUrl ? { blockExplorerUrl: config.evm.blockExplorerUrl } : {}),
       nativeAsset: {
         chainId: config.evm.chainId,
         address: '0x0000000000000000000000000000000000000000',
@@ -22,6 +24,7 @@ export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainCon
         denomination: asset.denomination,
         decimals: asset.decimals,
         ...(asset.boltzCurrency ? { boltzCurrency: asset.boltzCurrency } : {}),
+        ...(asset.boltzRouteVia ? { boltzRouteVia: asset.boltzRouteVia } : {}),
       })),
       ...(config.evm.boltzApiUrl ? { boltz: { apiUrl: config.evm.boltzApiUrl } } : {}),
       accountAbstraction: {

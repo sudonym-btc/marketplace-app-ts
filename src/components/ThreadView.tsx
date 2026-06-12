@@ -3,8 +3,6 @@ import type { FormEvent } from 'react'
 import type * as marketplace from 'nostr-tools/marketplace'
 
 import {
-  formatAmount,
-  formatDate,
   shortPubkey,
   type ConversationGroup,
   type ParsedInboxMessage,
@@ -12,6 +10,9 @@ import {
 import type { NostrProfile } from '../nostr/profiles'
 import { OrderWidget } from './OrderWidget'
 import { ProfileChip } from './ProfileChip'
+import { Button, Card, Textarea, cn } from './ui'
+import { Field } from './widgets/FormField'
+import { ReservationOfferWidget } from './widgets/ReservationOfferWidget'
 
 type Props = {
   group?: ConversationGroup
@@ -19,46 +20,13 @@ type Props = {
   currentPubkey: string
   onReply: (group: ConversationGroup, content: string) => Promise<void>
   onCancelOrder?: (group: marketplace.ParsedOrderGroup) => void | Promise<void>
-  onMessageEscrow?: (group: marketplace.ParsedOrderGroup) => void
-}
-
-function OrderDetails({ order }: { order: marketplace.ParsedOrder }) {
-  const start = formatDate(order.content.start)
-  const end = formatDate(order.content.end)
-  return (
-    <dl className="message-facts">
-      <div>
-        <dt>Amount</dt>
-        <dd>{formatAmount(order.content.amount)}</dd>
-      </div>
-      {start && (
-        <div>
-          <dt>Start</dt>
-          <dd>{start}</dd>
-        </div>
-      )}
-      {end && (
-        <div>
-          <dt>End</dt>
-          <dd>{end}</dd>
-        </div>
-      )}
-      <div>
-        <dt>Quantity</dt>
-        <dd>{order.content.quantity}</dd>
-      </div>
-      <div>
-        <dt>Trade</dt>
-        <dd><code>{shortPubkey(order.tradeId)}</code></dd>
-      </div>
-    </dl>
-  )
+  onMessageArbiter?: (group: marketplace.ParsedOrderGroup) => void
 }
 
 function MessageBody({ message }: { message: ParsedInboxMessage }) {
-  if (message.order) return <OrderDetails order={message.order} />
-  if (message.item.error) return <p className="message-error">{message.item.error}</p>
-  return <p>{message.body || 'No message body'}</p>
+  if (message.order) return <ReservationOfferWidget order={message.order} />
+  if (message.item.error) return <p className="m-0 text-sm text-destructive">{message.item.error}</p>
+  return <p className="m-0 text-sm leading-6 text-muted-foreground">{message.body || 'No message body'}</p>
 }
 
 function ThreadMessage({ message, profiles, currentPubkey }: {
@@ -68,17 +36,17 @@ function ThreadMessage({ message, profiles, currentPubkey }: {
 }) {
   const isMine = message.senderPubkey === currentPubkey
   return (
-    <article className={`message-row${isMine ? ' own' : ''}`}>
-      <header className="message-header">
+    <Card className={cn('grid max-w-3xl gap-3 p-4 shadow-none', isMine && 'justify-self-end')}>
+      <header className="flex items-center justify-between gap-4">
         <ProfileChip pubkey={message.senderPubkey} profile={profiles.get(message.senderPubkey)} />
-        <span>{new Date(message.createdAt * 1000).toLocaleString()}</span>
+        <span className="text-right text-xs text-muted-foreground">{new Date(message.createdAt * 1000).toLocaleString()}</span>
       </header>
-      <div className="message-title-row">
-        <h3>{message.title}</h3>
-        {isMine && <span>Sent</span>}
+      <div className="flex items-start justify-between gap-4">
+        <h3 className="m-0 text-base font-semibold text-foreground">{message.title}</h3>
+        {isMine && <span className="text-xs font-medium text-muted-foreground">Sent</span>}
       </div>
       <MessageBody message={message} />
-    </article>
+    </Card>
   )
 }
 
@@ -88,7 +56,7 @@ export function ThreadView({
   currentPubkey,
   onReply,
   onCancelOrder,
-  onMessageEscrow,
+  onMessageArbiter,
 }: Props) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -113,15 +81,15 @@ export function ThreadView({
 
   if (!group) {
     return (
-      <section className="thread-view empty">
-        <p>Select a conversation.</p>
+      <section className="grid min-h-0 min-w-0 place-items-center text-muted-foreground">
+        <p className="text-sm">Select a conversation.</p>
       </section>
     )
   }
 
   return (
-    <section className="thread-view">
-      <div className="conversation-participants">
+    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="flex flex-wrap gap-2 border-b border-border px-5 py-3">
         {group.replyPubkeys.map(pubkey => (
           <ProfileChip
             compact
@@ -133,18 +101,18 @@ export function ThreadView({
       </div>
 
       {group.orderGroup && (
-        <div className="thread-order-panel">
+        <div className="border-b border-border bg-background px-5 py-3">
           <OrderWidget
             group={group.orderGroup}
             onCancel={onCancelOrder}
-            onMessageEscrow={onMessageEscrow}
+            onMessageArbiter={onMessageArbiter}
           />
         </div>
       )}
 
-      <div className="thread-messages">
+      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto bg-muted/30 p-5">
         {group.messages.length === 0 ? (
-          <p className="thread-empty-message">No private messages in this order thread yet.</p>
+          <p className="m-0 text-sm text-muted-foreground">No private messages in this order thread yet.</p>
         ) : (
           group.messages.map(message => (
             <ThreadMessage
@@ -157,22 +125,22 @@ export function ThreadView({
         )}
       </div>
 
-      <form className="thread-composer" onSubmit={submit}>
-        <label>
-          <span>Reply</span>
-          <textarea
+      <form className="grid gap-3 border-t border-border bg-background px-5 py-4" onSubmit={submit}>
+        <Field label="Reply">
+          <Textarea
+            className="min-h-24"
             value={draft}
             onChange={event => setDraft(event.target.value)}
             placeholder="Write a reply..."
             disabled={sending}
           />
-        </label>
-        {error && <p className="message-error">{error}</p>}
-        <div className="composer-actions">
-          <span>{group.replyPubkeys.filter(pubkey => pubkey !== currentPubkey).length} recipient(s)</span>
-          <button className="button" type="submit" disabled={sending || !draft.trim()}>
+        </Field>
+        {error && <p className="m-0 text-sm text-destructive">{error}</p>}
+        <div className="flex items-center justify-between gap-4 max-[640px]:items-stretch max-[640px]:flex-col">
+          <span className="text-sm text-muted-foreground">{group.replyPubkeys.filter(pubkey => pubkey !== currentPubkey).length} recipient(s)</span>
+          <Button type="submit" disabled={sending || !draft.trim()}>
             {sending ? 'Sending...' : 'Send reply'}
-          </button>
+          </Button>
         </div>
       </form>
     </section>

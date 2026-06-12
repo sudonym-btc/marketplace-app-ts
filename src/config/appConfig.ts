@@ -5,13 +5,22 @@ export type AppAssetConfig = {
   address: Address
   decimals: number
   boltzCurrency?: string
+  boltzRouteVia?: {
+    boltzCurrency: string
+    assetAddress: Address
+    decimals: number
+    quoteCurrency?: string
+  }
 }
 
 export type EvmAppConfig = {
   enabled: boolean
   chainId: number
   chainName: string
+  boltzCurrency?: string
   rpcUrl: string
+  /** Optional base URL for a human-facing block explorer for this EVM chain. */
+  blockExplorerUrl?: string
   boltzApiUrl?: string
   entryPointAddress: Address
   accountFactoryAddress: Address
@@ -48,14 +57,30 @@ export type AppConfig = {
   relays: string[]
   nip46Relays: string[]
   signetUrl?: string
+  blossomUploadUrl?: string
   demoAccounts: DemoAccountConfig[]
-  autoTrustEscrowPubkeys: string[]
+  autoTrustArbiterPubkeys: string[]
   evm: EvmAppConfig
   cashu: CashuAppConfig
 }
 
 const zeroAddress = '0x0000000000000000000000000000000000000000' as Address
 export const defaultRelay = 'ws://127.0.0.1:18080'
+const developmentDomains = ['marketplace.test']
+const developmentServiceHostPrefixes: Record<string, string> = {
+  '18080': 'relay',
+  '13047': 'signet',
+  '13046': 'signet.api',
+  '13096': 'blossom',
+  '18545': 'rootstock.evm',
+  '18546': 'arbitrum.evm',
+  '4337': 'bundler.evm',
+  '3010': 'paymaster.evm',
+  '19001': 'boltz.evm',
+  '19000': 'boltz.backend.evm',
+  '19338': 'mint.cashu',
+  '19339': 'mint-usd.cashu',
+}
 
 const defaultDemoAccounts: DemoAccountConfig[] = [
   { id: 'buyer', label: 'Buyer', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsmhltgl' },
@@ -63,9 +88,9 @@ const defaultDemoAccounts: DemoAccountConfig[] = [
   { id: 'sellerEvm', label: 'Seller - EVM', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqypqfr48f3' },
   { id: 'sellerCashu', label: 'Seller - Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqypsuzaluz' },
   { id: 'sellerBoth', label: 'Seller - EVM + Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyzqcdyq5m' },
-  { id: 'escrowEvm', label: 'Escrow - EVM', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgqst89hlq' },
-  { id: 'escrowCashu', label: 'Escrow - Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgpq3mz4p4' },
-  { id: 'escrowBoth', label: 'Escrow - EVM + Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgpsy62d5x' },
+  { id: 'arbiterEvm', label: 'Arbiter - EVM', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgqst89hlq' },
+  { id: 'arbiterCashu', label: 'Arbiter - Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgpq3mz4p4' },
+  { id: 'arbiterBoth', label: 'Arbiter - EVM + Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgpsy62d5x' },
 ]
 
 function env(name: string): string | undefined {
@@ -75,6 +100,10 @@ function env(name: string): string | undefined {
 
 function browserHost(): string | undefined {
   return typeof window === 'undefined' ? undefined : window.location.hostname
+}
+
+function browserProtocol(): string | undefined {
+  return typeof window === 'undefined' ? undefined : window.location.protocol
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -90,13 +119,35 @@ function isRemoteBrowserHost(hostname: string | undefined): hostname is string {
   return Boolean(hostname && !isLoopbackHost(hostname))
 }
 
+function developmentDomainForHost(hostname: string): string | undefined {
+  return developmentDomains.find(domain => hostname === domain || hostname.endsWith(`.${domain}`))
+}
+
 function browserReachableUrl(value: string | undefined): string | undefined {
   if (!value) return undefined
   const host = browserHost()
-  if (!isRemoteBrowserHost(host)) return value
   try {
     const url = new URL(value)
-    if (!isLoopbackHost(url.hostname)) return value
+    const developmentDomain = host ? developmentDomainForHost(host) : undefined
+    if (isRemoteBrowserHost(host) && isLoopbackHost(url.hostname)) {
+      if (developmentDomain) {
+        const serviceHostPrefix = developmentServiceHostPrefixes[url.port]
+        if (serviceHostPrefix) {
+          url.hostname = `${serviceHostPrefix}.${developmentDomain}`
+          url.port = ''
+        } else {
+          url.hostname = host
+        }
+      } else {
+        url.hostname = host
+      }
+    }
+    if (browserProtocol() === 'https:' && developmentDomainForHost(url.hostname)) {
+      if (url.protocol === 'ws:') url.protocol = 'wss:'
+      if (url.protocol === 'http:') url.protocol = 'https:'
+    }
+    if (!isRemoteBrowserHost(host)) return url.toString()
+    if (!isLoopbackHost(url.hostname)) return url.toString()
     url.hostname = host
     return url.toString()
   } catch {
@@ -153,6 +204,10 @@ function parseAssets(): AppAssetConfig[] {
   }
 }
 
+function normalizeCashuMintUrl(mintUrl: string): string {
+  return mintUrl.replace(/\/+$/, '')
+}
+
 function parseCashuMints(): CashuMintConfig[] {
   const raw = env('VITE_CASHU_MINTS')
   if (!raw) return []
@@ -163,7 +218,10 @@ function parseCashuMints(): CashuMintConfig[] {
       typeof mint.unit === 'string' &&
       typeof mint.denomination === 'string' &&
       Number.isSafeInteger(mint.decimals),
-    ).map(mint => ({ ...mint, mintUrl: browserReachableUrl(mint.mintUrl) ?? mint.mintUrl }))
+    ).map(mint => ({
+      ...mint,
+      mintUrl: normalizeCashuMintUrl(browserReachableUrl(mint.mintUrl) ?? mint.mintUrl),
+    }))
   } catch {
     return []
   }
@@ -178,13 +236,16 @@ export function loadAppConfig(): AppConfig {
     relays: parseRelays(),
     nip46Relays: parseRelays('VITE_NIP46_RELAYS'),
     signetUrl: browserReachableUrl(env('VITE_SIGNET_URL')),
+    blossomUploadUrl: browserReachableUrl(env('VITE_BLOSSOM_UPLOAD_URL')),
     demoAccounts: parseDemoAccounts(),
-    autoTrustEscrowPubkeys: parseCsv('VITE_MARKETPLACE_AUTO_TRUST_ESCROW_PUBKEYS'),
+    autoTrustArbiterPubkeys: parseCsv('VITE_MARKETPLACE_AUTO_TRUST_ARBITER_PUBKEYS'),
     evm: {
       enabled: evmEnabled,
       chainId,
       chainName: env('VITE_EVM_CHAIN_NAME') ?? `EVM ${chainId || ''}`.trim(),
+      boltzCurrency: env('VITE_EVM_BOLTZ_CURRENCY'),
       rpcUrl: browserReachableUrl(rpcUrl) ?? rpcUrl,
+      blockExplorerUrl: browserReachableUrl(env('VITE_EVM_BLOCK_EXPLORER_URL')),
       boltzApiUrl: browserReachableUrl(env('VITE_EVM_BOLTZ_API_URL')),
       entryPointAddress: envAddress('VITE_EVM_ENTRY_POINT_ADDRESS'),
       accountFactoryAddress: envAddress('VITE_EVM_ACCOUNT_FACTORY_ADDRESS'),
