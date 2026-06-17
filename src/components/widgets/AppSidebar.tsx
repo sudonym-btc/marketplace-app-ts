@@ -4,17 +4,16 @@ import { Link } from '@tanstack/react-router'
 import { MenuIcon } from 'lucide-react'
 
 import type { NavigationCounts } from '../../hooks/useMarketplaceData'
-import type { AppSession, LoadedMarketplace } from '../../types'
+import type { AppSession, LoadedMarketplaceSession } from '../../types'
 import { Button, Dialog, DialogContent, DialogTitle, cn } from '../ui'
 import { SessionPanel } from './SessionPanel'
 
 type AppSidebarProps = {
   session?: AppSession
-  marketplace?: LoadedMarketplace
+  marketplaceSession?: LoadedMarketplaceSession
   navigationCounts: NavigationCounts
   status: string
   loading: boolean
-  onRefresh(): void
   onLogout(): void
 }
 
@@ -77,11 +76,10 @@ function NavSection({
 
 function SidebarContent({
   loading,
-  marketplace,
+  marketplaceSession,
   navigationCounts,
   onLogout,
   onNavigate,
-  onRefresh,
   session,
   status,
 }: AppSidebarProps & { onNavigate?: () => void }) {
@@ -121,9 +119,8 @@ function SidebarContent({
       </nav>
       <SessionPanel
         loading={loading}
-        marketplace={marketplace}
+        marketplaceSession={marketplaceSession}
         onLogout={onLogout}
-        onRefresh={onRefresh}
         session={session}
         status={status}
       />

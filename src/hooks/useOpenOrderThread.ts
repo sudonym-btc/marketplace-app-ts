@@ -12,7 +12,7 @@ export function useOpenOrderThread() {
   const navigate = useNavigate()
   const { state, actions } = useMarketplaceApp()
   const session = state.session
-  const marketplaceSession = state.marketplace?.runtime
+  const marketplaceSession = state.marketplaceSession
 
   return useCallback(async (group: marketplace.ParsedOrderGroup, peerRole: 'buyer' | 'seller') => {
     if (!session) {
@@ -23,7 +23,7 @@ export function useOpenOrderThread() {
     let peerPubkey = peerRole === 'seller' ? group.sellerPubkey : buyerPeerPubkey(group)
     if (peerRole === 'buyer' && marketplaceSession) {
       try {
-        const resolved = await marketplaceSession.orders.groups.resolveParticipants(group, {
+        const resolved = await marketplaceSession.me.orders.resolveParticipants(group, {
           signer: session.signer,
           signerPubkey: session.pubkey,
         })

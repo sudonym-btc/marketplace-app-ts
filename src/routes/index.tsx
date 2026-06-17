@@ -6,9 +6,9 @@ import { useMarketplaceApp } from '../state/AppStateContext'
 
 function ListingsRoute() {
   const { state } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const listings = useRouteFetch(
-    () => marketplaceClient.listings.search({ limit: 80 }),
+    () => marketplaceClient.listings.search({ limit: 80 }, { maxWait: 2500 }),
     [],
     [marketplaceClient, state.refreshRevision],
   )

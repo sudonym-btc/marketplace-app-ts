@@ -2,7 +2,9 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight } from 'lucide-react'
 import type * as marketplaceSdk from 'nostr-tools/marketplace'
 
-import type { AuctionListingResolution } from '../../types'
+import { useMarketplaceValue } from '../../hooks/useMarketplaceValue'
+import { isWinningBidChain } from '../../nostr/auctionBidChains'
+import type { AuctionListingResolution, MarketplaceSession } from '../../types'
 import { formatDenominatedValue, formatPriceAmount } from '../../utils/amountDisplay'
 import { formatDateTime } from '../../utils/timeDisplay'
 import { Badge, Button, Card } from '../ui'
@@ -11,8 +13,14 @@ import { AuctionEndValue } from './TimeText'
 
 type AuctionCardProps = {
   backfillComplete?: boolean
+  marketplaceSession?: MarketplaceSession
   row: AuctionListingResolution
   snapshot?: marketplaceSdk.MarketplaceAuctionScopeSnapshot
+}
+
+type AuctionViewerStatus = {
+  label: string
+  variant: 'default' | 'secondary' | 'outline'
 }
 
 function shortPubkey(pubkey: string): string {
@@ -32,7 +40,53 @@ function formatListingPrice(listing: NonNullable<AuctionListingResolution['listi
   return `${formatPriceAmount(price.amount, price.currency)}${price.frequency ? ` / ${price.frequency}` : ''}`
 }
 
-export function AuctionCard({ backfillComplete, row, snapshot }: AuctionCardProps) {
+function seedOwnershipPath(nextTradeIndex: number | undefined): marketplaceSdk.MarketplaceSessionSeedOwnershipPath {
+  return { lookahead: nextTradeIndex === undefined ? 500 : 50 }
+}
+
+function ownsBidGroup(
+  marketplaceSession: MarketplaceSession,
+  group: marketplaceSdk.ParsedAuctionBidGroup | undefined,
+  nextTradeIndex: number | undefined,
+): boolean {
+  return Boolean(group && marketplaceSession.seed.owns(group.bid.event.pubkey, seedOwnershipPath(nextTradeIndex)))
+}
+
+function ownsBidChain(
+  marketplaceSession: MarketplaceSession,
+  chain: marketplaceSdk.ParsedAuctionBidChain | undefined,
+  nextTradeIndex: number | undefined,
+): boolean {
+  return Boolean(chain && chain.groups.some(group => ownsBidGroup(marketplaceSession, group, nextTradeIndex)))
+}
+
+function auctionViewerStatus(
+  marketplaceSession: MarketplaceSession | undefined,
+  snapshot: marketplaceSdk.MarketplaceAuctionScopeSnapshot | undefined,
+  nextTradeIndex: number | undefined,
+): AuctionViewerStatus | undefined {
+  if (!marketplaceSession || !snapshot) return undefined
+  const ownChains = snapshot.bidChains.filter(chain => ownsBidChain(marketplaceSession, chain, nextTradeIndex))
+  if (ownChains.length === 0) return undefined
+
+  const promoted = ownChains.some(chain =>
+    chain.groups.some(group => group.settlement?.content.action === 'auction_promote'),
+  )
+  if (promoted || ownChains.some(chain => isWinningBidChain(chain, snapshot.complete))) {
+    return { label: 'You won', variant: 'default' }
+  }
+
+  if (snapshot.complete) return { label: 'Not selected', variant: 'outline' }
+
+  if (ownsBidChain(marketplaceSession, snapshot.highestBid, nextTradeIndex)) {
+    return { label: 'Currently highest', variant: 'default' }
+  }
+
+  return { label: 'Outbid', variant: 'secondary' }
+}
+
+export function AuctionCard({ backfillComplete, marketplaceSession, row, snapshot }: AuctionCardProps) {
+  const nextTradeIndex = useMarketplaceValue(marketplaceSession?.nextTradeIndex)
   const { auction, listing } = row
   const image = listing?.images[0]?.url
   const summary = listing?.summary || listing?.description
@@ -41,6 +95,7 @@ export function AuctionCard({ backfillComplete, row, snapshot }: AuctionCardProp
     ? `${snapshot.payments.length} / ${snapshot.paymentAcks.length} ack / ${snapshot.paymentNacks.length} nack`
     : 'Loading'
   const status = snapshot?.complete?.status ?? auctionStatus(auction)
+  const viewerStatus = auctionViewerStatus(marketplaceSession, snapshot, nextTradeIndex)
 
   return (
     <Card className="overflow-hidden p-0 shadow-sm">
@@ -62,9 +117,12 @@ export function AuctionCard({ backfillComplete, row, snapshot }: AuctionCardProp
         <div className="grid gap-4 p-4">
           <div className="flex min-w-0 items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {auction.currency} {auction.auctionType ?? 'english'} auction
-              </p>
+              <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {auction.currency} {auction.auctionType ?? 'english'} auction
+                </p>
+                {viewerStatus && <Badge variant={viewerStatus.variant}>{viewerStatus.label}</Badge>}
+              </div>
               <h3 className="text-base font-semibold leading-6 text-foreground">
                 {listing?.title ?? 'Unresolved listing'}
               </h3>
@@ -88,6 +146,7 @@ export function AuctionCard({ backfillComplete, row, snapshot }: AuctionCardProp
               },
               { label: 'Bids', value: snapshot ? snapshot.bidGroups.length.toString() : 'Loading' },
               { label: 'Payments', value: paymentSummary },
+              ...(viewerStatus ? [{ label: 'My bid', value: viewerStatus.label }] : []),
               { label: 'Starts', value: formatDateTime(auction.startAt) },
               { label: 'Ends', value: <AuctionEndValue seconds={auction.endAt} /> },
               { label: 'Backfill', value: backfillComplete ? 'EOSE' : 'Syncing' },

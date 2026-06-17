@@ -16,11 +16,11 @@ import { formatDateTime } from '../../utils/timeDisplay'
 import { Badge, Button, cn } from '../ui'
 
 type BadgeVariant = NonNullable<ComponentProps<typeof Badge>['variant']>
-type PaymentEvent = marketplace.ParsedOrderPayment['event']
+type PaymentEvent = marketplace.ParsedPayment['event']
 type PaymentDecision =
-  | marketplace.ParsedOrderPaymentAck
-  | marketplace.ParsedOrderPaymentNack
-  | marketplace.ParsedOrderPaymentSettlement
+  | marketplace.ParsedPaymentAck
+  | marketplace.ParsedPaymentNack
+  | marketplace.ParsedPaymentSettlement
 
 type LifecycleFact = {
   label: string
@@ -41,18 +41,18 @@ type LifecycleItem = {
 
 type PaymentLifecycle = {
   id: string
-  payment?: marketplace.ParsedOrderPayment
+  payment?: marketplace.ParsedPayment
   paymentIndex?: number
-  acks: marketplace.ParsedOrderPaymentAck[]
-  nacks: marketplace.ParsedOrderPaymentNack[]
-  settlements: marketplace.ParsedOrderPaymentSettlement[]
+  acks: marketplace.ParsedPaymentAck[]
+  nacks: marketplace.ParsedPaymentNack[]
+  settlements: marketplace.ParsedPaymentSettlement[]
 }
 
 type PaymentLifecyclesProps = {
-  payments: marketplace.ParsedOrderPayment[]
-  paymentAcks: marketplace.ParsedOrderPaymentAck[]
-  paymentNacks: marketplace.ParsedOrderPaymentNack[]
-  settlements: marketplace.ParsedOrderPaymentSettlement[]
+  payments: marketplace.ParsedPayment[]
+  paymentAcks: marketplace.ParsedPaymentAck[]
+  paymentNacks: marketplace.ParsedPaymentNack[]
+  settlements: marketplace.ParsedPaymentSettlement[]
   evmBlockExplorerUrl?: string
   className?: string
   emptyText?: string
@@ -62,7 +62,7 @@ function shortIdList(ids: string[]): string | undefined {
   return ids.length > 0 ? ids.map(shortPubkey).join(', ') : undefined
 }
 
-function refFacts(refs: marketplace.ParsedOrderPayment['refs']): LifecycleFact[] {
+function refFacts(refs: marketplace.ParsedPayment['refs']): LifecycleFact[] {
   return [
     { label: 'Order refs', value: shortIdList(refs.orders) },
     { label: 'Bid refs', value: shortIdList(refs.auctionBids) },
@@ -121,7 +121,7 @@ function evmTransactionProofUrl(baseUrl: string | undefined, params: Record<stri
   }
 }
 
-function paymentContentFields(payment: marketplace.ParsedOrderPayment): {
+function paymentContentFields(payment: marketplace.ParsedPayment): {
   amount?: marketplace.MarketplaceAmount
   sealedAmount?: unknown
 } {
@@ -149,7 +149,7 @@ function formatProofAmount(params: Record<string, unknown>): string | undefined 
 }
 
 function paymentAmountLabel(
-  payment: marketplace.ParsedOrderPayment,
+  payment: marketplace.ParsedPayment,
   proof: marketplace.PaymentProofEvidence | null | undefined,
 ): string {
   const content = paymentContentFields(payment)
@@ -169,7 +169,7 @@ function proofDriverLabel(proof: marketplace.PaymentProofEvidence | null | undef
   return undefined
 }
 
-function settlementLabel(settlement: marketplace.ParsedOrderPaymentSettlement): string {
+function settlementLabel(settlement: marketplace.ParsedPaymentSettlement): string {
   if (settlement.content.action === 'auction_promote') return 'Payment promote'
   if (settlement.content.action === 'auction_refund') return 'Payment refund'
   return 'Payment settlement'
@@ -191,7 +191,7 @@ function lifecycleStatus(lifecycle: PaymentLifecycle): {
     ...lifecycle.settlements,
   ])
   if (latestDecision?.event.kind === 32125) {
-    const settlement = latestDecision as marketplace.ParsedOrderPaymentSettlement
+    const settlement = latestDecision as marketplace.ParsedPaymentSettlement
     if (settlement.content.action === 'auction_promote') return { label: 'Promoted', variant: 'default' }
     if (settlement.content.action === 'auction_refund') return { label: 'Refunded', variant: 'secondary' }
     return { label: 'Settled', variant: 'secondary' }
@@ -208,10 +208,10 @@ function paymentIdsForDecision(decision: PaymentDecision): string[] {
 }
 
 function buildPaymentLifecycles(
-  payments: marketplace.ParsedOrderPayment[],
-  paymentAcks: marketplace.ParsedOrderPaymentAck[],
-  paymentNacks: marketplace.ParsedOrderPaymentNack[],
-  settlements: marketplace.ParsedOrderPaymentSettlement[],
+  payments: marketplace.ParsedPayment[],
+  paymentAcks: marketplace.ParsedPaymentAck[],
+  paymentNacks: marketplace.ParsedPaymentNack[],
+  settlements: marketplace.ParsedPaymentSettlement[],
 ): PaymentLifecycle[] {
   const lifecycles = new Map<string, PaymentLifecycle>()
 
@@ -248,7 +248,7 @@ function buildPaymentLifecycles(
 }
 
 function paymentEventItem(
-  payment: marketplace.ParsedOrderPayment,
+  payment: marketplace.ParsedPayment,
   index: number,
   totalPayments: number,
   evmBlockExplorerUrl: string | undefined,
@@ -285,7 +285,7 @@ function paymentEventItem(
   }
 }
 
-function ackEventItem(ack: marketplace.ParsedOrderPaymentAck, index: number, count: number): LifecycleItem {
+function ackEventItem(ack: marketplace.ParsedPaymentAck, index: number, count: number): LifecycleItem {
   return {
     key: `ack:${ack.event.id}:${index}`,
     label: count > 1 ? `Payment ACK ${index + 1}` : 'Payment ACK',
@@ -302,7 +302,7 @@ function ackEventItem(ack: marketplace.ParsedOrderPaymentAck, index: number, cou
   }
 }
 
-function nackEventItem(nack: marketplace.ParsedOrderPaymentNack, index: number, count: number): LifecycleItem {
+function nackEventItem(nack: marketplace.ParsedPaymentNack, index: number, count: number): LifecycleItem {
   return {
     key: `nack:${nack.event.id}:${index}`,
     label: count > 1 ? `Payment NACK ${index + 1}` : 'Payment NACK',
@@ -320,7 +320,7 @@ function nackEventItem(nack: marketplace.ParsedOrderPaymentNack, index: number, 
 }
 
 function settlementEventItem(
-  settlement: marketplace.ParsedOrderPaymentSettlement,
+  settlement: marketplace.ParsedPaymentSettlement,
   index: number,
   count: number,
 ): LifecycleItem {

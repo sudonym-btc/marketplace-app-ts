@@ -40,6 +40,7 @@ function skipHorizontalWhitespace(code: string, startIndex: number): number {
 
 export function formatCodeHint(code: string): string {
   const trimmedCode = code.trim()
+  if (trimmedCode.includes('\n')) return trimmedCode
 
   const output: string[] = []
   const containers: Container[] = []

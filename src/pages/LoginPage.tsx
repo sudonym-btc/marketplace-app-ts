@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 
+import { CodeHint } from '../codeHints/codeHints'
 import { Alert, Button, Card, Input, Textarea } from '../components/ui'
 import { Eyebrow } from '../components/widgets/Eyebrow'
 import { Field } from '../components/widgets/FormField'
@@ -18,6 +19,15 @@ type Props = {
   onLogin(session: AppSession): void
   onError(error: string): void
 }
+
+const marketplaceInitializationHint = `const marketplaceSession = await marketplace.session(session.signer, {
+  pubkey: session.pubkey,
+  orderDrivers,
+  auctionDrivers,
+  publish: event => publisher(session).publish(event),
+})
+
+await marketplaceSession.start()`
 
 export function LoginPage({ relays, nip46Relays, signetUrl, demoAccounts, loading, error, onLogin, onError }: Props) {
   const [bunkerInput, setBunkerInput] = useState('')
@@ -68,53 +78,55 @@ export function LoginPage({ relays, nip46Relays, signetUrl, demoAccounts, loadin
           Sign in with a remote signer to publish listings, read private trade messages, and sign marketplace orders.
         </p>
       </div>
-      <Card className="grid gap-4 p-5">
-        <Field label="Bunker URI or NIP-05">
-          <Input
-            value={bunkerInput}
-            onChange={event => setBunkerInput(event.target.value)}
-            placeholder="bunker://... or user@example.com"
-          />
-        </Field>
-        <Button disabled={!bunkerInput || waiting || loading} onClick={bunkerLogin}>
-          Connect bunker
-        </Button>
-        <div className="text-center text-sm font-medium text-muted-foreground">or</div>
-        <Button disabled={waiting || loading} onClick={startNostrConnect} variant="secondary">
-          Create Nostr Connect QR
-        </Button>
-        {demoAccounts.length > 0 && (
-          <>
-            <div className="text-center text-sm font-medium text-muted-foreground">or</div>
-            <div className="grid grid-cols-2 gap-2 max-[520px]:grid-cols-1">
-              {demoAccounts.map(account => (
-                <Button
-                  key={account.id}
-                  disabled={waiting || loading}
-                  onClick={() => void demoLogin(account)}
-                  variant="secondary"
-                >
-                  Login as {account.label}
+      <CodeHint code={marketplaceInitializationHint} className="rounded-xl">
+        <Card className="grid gap-4 p-5">
+          <Field label="Bunker URI or NIP-05">
+            <Input
+              value={bunkerInput}
+              onChange={event => setBunkerInput(event.target.value)}
+              placeholder="bunker://... or user@example.com"
+            />
+          </Field>
+          <Button disabled={!bunkerInput || waiting || loading} onClick={bunkerLogin}>
+            Connect bunker
+          </Button>
+          <div className="text-center text-sm font-medium text-muted-foreground">or</div>
+          <Button disabled={waiting || loading} onClick={startNostrConnect} variant="secondary">
+            Create Nostr Connect QR
+          </Button>
+          {demoAccounts.length > 0 && (
+            <>
+              <div className="text-center text-sm font-medium text-muted-foreground">or</div>
+              <div className="grid grid-cols-2 gap-2 max-[520px]:grid-cols-1">
+                {demoAccounts.map(account => (
+                  <Button
+                    key={account.id}
+                    disabled={waiting || loading}
+                    onClick={() => void demoLogin(account)}
+                    variant="secondary"
+                  >
+                    Login as {account.label}
+                  </Button>
+                ))}
+              </div>
+            </>
+          )}
+          {error && <Alert variant="destructive">{error}</Alert>}
+          {connectUri && (
+            <div className="grid justify-items-center gap-3">
+              <QRCodeSVG value={connectUri} size={180} />
+              {signetUrl && (
+                <Button asChild variant="secondary">
+                  <a href={signetUrl} target="_blank" rel="noreferrer">
+                    Open Signet
+                  </a>
                 </Button>
-              ))}
+              )}
+              <Textarea className="h-20 min-h-20 text-xs" readOnly value={connectUri} />
             </div>
-          </>
-        )}
-        {error && <Alert variant="destructive">{error}</Alert>}
-        {connectUri && (
-          <div className="grid justify-items-center gap-3">
-            <QRCodeSVG value={connectUri} size={180} />
-            {signetUrl && (
-              <Button asChild variant="secondary">
-                <a href={signetUrl} target="_blank" rel="noreferrer">
-                  Open Signet
-                </a>
-              </Button>
-            )}
-            <Textarea className="h-20 min-h-20 text-xs" readOnly value={connectUri} />
-          </div>
-        )}
-      </Card>
+          )}
+        </Card>
+      </CodeHint>
     </section>
   )
 }

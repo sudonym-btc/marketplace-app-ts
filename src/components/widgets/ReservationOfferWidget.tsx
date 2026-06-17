@@ -131,7 +131,7 @@ function extraFacts(order: marketplace.ParsedOrder): { label: string; value: str
 
 export function ReservationOfferWidget({ order }: Props) {
   const { state } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const [listingState, setListingState] = useState<ListingState>(() => {
     const listing = embeddedListing(order)
     return listing ? { status: 'loaded', listing } : { status: 'idle' }

@@ -1,22 +1,22 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { RequireLogin } from '../components/RequireLogin'
-import { useOrderBuckets } from '../hooks/useMarketplaceData'
+import { useMyOrders } from '../hooks/useMarketplaceData'
 import { useOpenOrderThread } from '../hooks/useOpenOrderThread'
 import { SellerOrdersPage } from '../pages/OrdersPage'
 import { useMarketplaceApp } from '../state/AppStateContext'
 
 function OrdersRoute() {
   const { state } = useMarketplaceApp()
-  const orderBuckets = useOrderBuckets(state.marketplace, state.refreshRevision)
+  const myOrders = useMyOrders(state.marketplaceSession, state.refreshRevision)
   const openOrderThread = useOpenOrderThread()
 
   return (
     <RequireLogin>
       <SellerOrdersPage
-        error={orderBuckets.error}
-        loading={orderBuckets.loading}
-        groups={orderBuckets.orders.onMyListings}
+        error={myOrders.error}
+        loading={myOrders.loading}
+        groups={myOrders.orders.received}
         onOpenThread={openOrderThread}
       />
     </RequireLogin>

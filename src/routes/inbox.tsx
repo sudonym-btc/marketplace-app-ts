@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import type * as marketplace from 'nostr-tools/marketplace'
 
 import { RequireLogin } from '../components/RequireLogin'
-import { useInboxItems, useOrderBuckets } from '../hooks/useMarketplaceData'
+import { useInboxItems, useMyOrders } from '../hooks/useMarketplaceData'
 import { InboxPage } from '../pages/InboxPage'
 import { useMarketplaceApp } from '../state/AppStateContext'
 
@@ -21,13 +21,17 @@ function InboxRoute() {
   const navigate = useNavigate()
   const search = Route.useSearch()
   const { state, publisher, actions } = useMarketplaceApp()
-  const marketplaceSession = state.marketplace?.runtime
+  const marketplaceSession = state.marketplaceSession
   const inboxItems = useInboxItems(marketplaceSession, state.refreshRevision)
-  const orderBuckets = useOrderBuckets(state.marketplace, state.refreshRevision)
+  const myOrders = useMyOrders(state.marketplaceSession, state.refreshRevision)
 
   if (!state.session || !publisher) return <RequireLogin><></></RequireLogin>
 
-  const orderGroups = uniqueOrderGroups([...orderBuckets.orders.mine, ...orderBuckets.orders.onMyListings])
+  const orderGroups = uniqueOrderGroups([
+    ...myOrders.orders.placed,
+    ...myOrders.orders.received,
+    ...myOrders.orders.arbitrating,
+  ])
   const targetThread = search.conversation
     ? {
         conversation: search.conversation,
@@ -38,17 +42,17 @@ function InboxRoute() {
   return (
     <RequireLogin>
       <InboxPage
-        error={inboxItems.error ?? orderBuckets.error}
+        error={inboxItems.error ?? myOrders.error}
         inbox={inboxItems.inbox}
-        loading={inboxItems.loading || orderBuckets.loading}
+        loading={inboxItems.loading || myOrders.loading}
         orderGroups={orderGroups}
-        marketplaceState={state.marketplace}
+        marketplaceSession={state.marketplaceSession}
         targetThread={targetThread}
         onTargetThreadCleared={() => void navigate({ to: '/inbox' })}
         session={state.session}
         publisher={publisher}
         onSent={inboxItems.refresh}
-        onOrdersChanged={orderBuckets.refresh}
+        onOrdersChanged={myOrders.refresh}
         onError={actions.setError}
       />
     </RequireLogin>

@@ -4,7 +4,7 @@ import { decode } from 'nostr-tools/nip19'
 import * as marketplaceSdk from 'nostr-tools/marketplace'
 
 import { ProfileChip } from '../ProfileChip'
-import type { AppSession, LoadedMarketplace } from '../../types'
+import type { AppSession, LoadedMarketplaceSession } from '../../types'
 import { shortPubkey } from '../../nostr/inboxThreads'
 import { fetchProfiles, type NostrProfile } from '../../nostr/profiles'
 import {
@@ -22,7 +22,7 @@ import {
 
 type TrustedArbitersSettingsProps = {
   autoTrustedArbiterPubkeys: string[]
-  marketplace?: LoadedMarketplace
+  marketplaceSession?: LoadedMarketplaceSession
   session?: AppSession
   onUpdated?(): void | Promise<void>
 }
@@ -87,7 +87,7 @@ function resultMessage(result: marketplaceSdk.MarketplacePaymentMethodEnsureResu
 
 export function TrustedArbitersSettings({
   autoTrustedArbiterPubkeys,
-  marketplace,
+  marketplaceSession,
   session,
   onUpdated,
 }: TrustedArbitersSettingsProps) {
@@ -113,7 +113,7 @@ export function TrustedArbitersSettings({
   const status = statusForMethod(method, loading)
 
   const loadPaymentMethod = useCallback(async () => {
-    if (!session || !marketplace) {
+    if (!session || !marketplaceSession) {
       setMethod(undefined)
       setError(undefined)
       setNotice(undefined)
@@ -123,14 +123,14 @@ export function TrustedArbitersSettings({
     setLoading(true)
     setError(undefined)
     try {
-      setMethod(await marketplace.runtime.paymentMethod.find())
+      setMethod(await marketplaceSession.paymentMethod.find())
     } catch (err) {
       console.warn('[marketplace-app] payment method load failed', err)
       setError(err instanceof Error ? err.message : 'Unable to load payment method')
     } finally {
       setLoading(false)
     }
-  }, [marketplace, session])
+  }, [marketplaceSession, session])
 
   useEffect(() => {
     void loadPaymentMethod()
@@ -158,13 +158,13 @@ export function TrustedArbitersSettings({
   }, [session, trustedArbiters])
 
   async function publishTrustedArbiters(nextTrustedArbiters: string[], successInput = ''): Promise<void> {
-    if (!marketplace || !session) return
+    if (!marketplaceSession || !session) return
 
     setSaving(true)
     setError(undefined)
     setNotice(undefined)
     try {
-      const result = await marketplace.runtime.paymentMethod.ensureUpToDate({
+      const result = await marketplaceSession.paymentMethod.ensureUpToDate({
         trustedArbiterPubkeys: uniqueSortedPubkeys(nextTrustedArbiters),
         requireListings: false,
         force: true,
@@ -219,7 +219,7 @@ export function TrustedArbitersSettings({
         <CardAction>
           <Button
             aria-label="Refresh trusted arbiters"
-            disabled={!session || !marketplace || loading || saving}
+            disabled={!session || !marketplaceSession || loading || saving}
             onClick={() => void loadPaymentMethod()}
             size="icon-sm"
             type="button"
@@ -260,13 +260,13 @@ export function TrustedArbitersSettings({
           <Textarea
             aria-label="Arbiter pubkeys"
             className="min-h-20 font-mono text-xs"
-            disabled={!session || !marketplace || saving}
+            disabled={!session || !marketplaceSession || saving}
             onChange={event => setInput(event.target.value)}
             placeholder="npub1... or 64-char hex pubkey"
             value={input}
           />
           <div className="flex justify-end">
-            <Button disabled={!session || !marketplace || saving || !input.trim()} type="submit">
+            <Button disabled={!session || !marketplaceSession || saving || !input.trim()} type="submit">
               <PlusIcon aria-hidden className="size-4" />
               {saving ? 'Updating' : 'Add trusted'}
             </Button>
@@ -294,7 +294,7 @@ export function TrustedArbitersSettings({
                   {!configured && (
                     <Button
                       aria-label={`Remove trusted arbiter ${shortPubkey(pubkey)}`}
-                      disabled={saving || !session || !marketplace}
+                      disabled={saving || !session || !marketplaceSession}
                       onClick={() => void removeTrustedArbiter(pubkey)}
                       size="icon-sm"
                       type="button"

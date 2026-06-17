@@ -1,13 +1,42 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from 'react'
 import * as marketplace from 'nostr-tools/marketplace'
 
-import { deriveLocalAuctionBidPubkeys, isOwnBidChain, sortBidChains } from '../nostr/auctionBidChains'
-import type { AppSession, LoadedMarketplace, MyBidChainResolution, OrderBucket } from '../types'
+import type { LoadedMarketplaceSession, MarketplaceSession, MyBidAuction, MyOrders } from '../types'
 
-const emptyOrders: OrderBucket = { mine: [], onMyListings: [] }
+const emptyOrders: MyOrders = { placed: [], received: [], arbitrating: [] }
 const emptyNavigationCounts = { myBids: 0, myOrders: 0, sellerOrders: 0 }
 
 export type NavigationCounts = typeof emptyNavigationCounts
+
+function bidAuctions(groups: marketplace.ParsedAuctionBidGroup[]): MyBidAuction[] {
+  const byAuction = new Map<string, MyBidAuction>()
+  for (const group of groups) {
+    const current = byAuction.get(group.auctionAnchor)
+    const lastBidAt = group.bid.event.created_at
+    if (current) {
+      current.groups.push(group)
+      current.lastBidAt = Math.max(current.lastBidAt, lastBidAt)
+    } else {
+      byAuction.set(group.auctionAnchor, {
+        auctionAnchor: group.auctionAnchor,
+        lastBidAt,
+        groups: [group],
+      })
+    }
+  }
+  return [...byAuction.values()]
+    .map(auction => ({
+      ...auction,
+      groups: auction.groups.sort((left, right) =>
+        right.bid.event.created_at - left.bid.event.created_at ||
+        right.bid.event.id.localeCompare(left.bid.event.id),
+      ),
+    }))
+    .sort((left, right) =>
+      right.lastBidAt - left.lastBidAt ||
+      right.auctionAnchor.localeCompare(left.auctionAnchor),
+    )
+}
 
 export function useRouteFetch<T>(
   load: () => Promise<T>,
@@ -43,34 +72,29 @@ export function useRouteFetch<T>(
   return { data, loading, error, refresh, setData }
 }
 
-export function useOrderBuckets(
-  marketplaceState: LoadedMarketplace | undefined,
+export function useMyOrders(
+  marketplaceSession: LoadedMarketplaceSession | undefined,
   refreshRevision: number,
 ) {
-  const marketplaceSession = marketplaceState?.runtime
-  const [orders, setOrders] = useState<OrderBucket>(emptyOrders)
+  const [orders, setOrders] = useState<MyOrders>(emptyOrders)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
 
   const refresh = useCallback(async () => {
-    if (!marketplaceState) {
+    if (!marketplaceSession) {
       setOrders(emptyOrders)
       return
     }
     setLoading(true)
     setError(undefined)
     try {
-      const buckets = await marketplaceState.runtime.orders.groups.mine()
-      setOrders({
-        mine: buckets.buyer,
-        onMyListings: buckets.seller,
-      })
+      setOrders(await marketplaceSession.me.orders.list({}, { maxWait: 2500 }))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load orders')
     } finally {
       setLoading(false)
     }
-  }, [marketplaceState])
+  }, [marketplaceSession])
 
   useEffect(() => {
     if (!marketplaceSession) {
@@ -80,16 +104,13 @@ export function useOrderBuckets(
 
     setLoading(true)
     setError(undefined)
-    console.debug('[marketplace-app] subscribing to my order buckets')
-    const stream = marketplaceSession.orders.groups.mine.stream({}, {
-      label: 'marketplace-app:orders.mine',
+    console.debug('[marketplace-app] subscribing to my order roles')
+    const stream = marketplaceSession.me.orders.watch({}, {
+      label: 'marketplace-app:me.orders',
       maxWait: 2500,
     })
-    const snapshotSubscription = stream.snapshot.subscribe(buckets => {
-      setOrders({
-        mine: buckets.buyer,
-        onMyListings: buckets.seller,
-      })
+    const snapshotSubscription = stream.snapshot.subscribe(snapshot => {
+      setOrders(snapshot)
       setLoading(false)
     })
     const statusSubscription = stream.status.subscribe(status => {
@@ -115,15 +136,13 @@ export function useOrderBuckets(
 }
 
 export function useNavigationCounts(
-  marketplaceState: LoadedMarketplace | undefined,
-  session: AppSession | undefined,
+  marketplaceSession: LoadedMarketplaceSession | undefined,
   refreshRevision: number,
 ): NavigationCounts {
-  const marketplaceSession = marketplaceState?.runtime
   const [counts, setCounts] = useState<NavigationCounts>(emptyNavigationCounts)
 
   useEffect(() => {
-    if (!marketplaceSession || !session) {
+    if (!marketplaceSession) {
       setCounts(current => ({
         ...current,
         myOrders: 0,
@@ -133,15 +152,15 @@ export function useNavigationCounts(
     }
 
     console.debug('[marketplace-app] subscribing to sidebar order counts')
-    const stream = marketplaceSession.orders.groups.mine.stream({}, {
-      label: 'marketplace-app:sidebar.orders',
+    const stream = marketplaceSession.me.orders.watch({}, {
+      label: 'marketplace-app:sidebar.me.orders',
       maxWait: 2500,
     })
-    const snapshotSubscription = stream.snapshot.subscribe(buckets => {
+    const snapshotSubscription = stream.snapshot.subscribe(snapshot => {
       setCounts(current => ({
         ...current,
-        myOrders: buckets.buyer.length,
-        sellerOrders: buckets.seller.length,
+        myOrders: snapshot.placed.length,
+        sellerOrders: snapshot.received.length,
       }))
     })
     const statusSubscription = stream.status.subscribe(status => {
@@ -154,13 +173,10 @@ export function useNavigationCounts(
       statusSubscription.unsubscribe()
       stream.close('sidebar order counts changed')
     }
-  }, [marketplaceSession, refreshRevision, session])
+  }, [marketplaceSession, refreshRevision])
 
   useEffect(() => {
-    let closed = false
-    let closer: { close(reason?: string): void } | undefined
-
-    if (!marketplaceState || !marketplaceSession || !session) {
+    if (!marketplaceSession) {
       setCounts(current => ({
         ...current,
         myBids: 0,
@@ -168,120 +184,96 @@ export function useNavigationCounts(
       return undefined
     }
 
-    setCounts(current => ({
-      ...current,
-      myBids: 0,
-    }))
-
-    void (async () => {
-      try {
-        const localAuctionBidPubkeys = await deriveLocalAuctionBidPubkeys(session, marketplaceState)
-        if (closed) return
-        const participantPubkeys = [session.pubkey, ...localAuctionBidPubkeys]
-
-        const updateBidCount = (groups: marketplace.ParsedAuctionBidGroup[]) => {
-          if (closed) return
-          const ownChains = marketplaceSession.auctions.bidGroups
-            .chains(groups)
-            .filter(chain => isOwnBidChain(chain, session.pubkey, localAuctionBidPubkeys))
-          setCounts(current => ({
-            ...current,
-            myBids: ownChains.length,
-          }))
-        }
-
-        console.debug('[marketplace-app] subscribing to sidebar bid count', {
-          participantPubkeyCount: participantPubkeys.length,
-        })
-        closer = marketplaceSession.auctions.bidGroups.subscribe({
-          participantPubkeys,
-          limit: 500,
-        }, {
-          ongroups: updateBidCount,
-          oninvalid: (event, error) => {
-            console.warn('[marketplace-app] sidebar bid count skipped invalid event', {
-              eventId: event.id,
-              kind: event.kind,
-            }, error)
-          },
-        }, {
-          label: 'marketplace-app:sidebar.bids',
-          maxWait: 2500,
-        })
-      } catch (err) {
-        if (!closed) console.warn('[marketplace-app] unable to subscribe to sidebar bid count', err)
+    console.debug('[marketplace-app] subscribing to sidebar bid count')
+    const stream = marketplaceSession.me.bids.placed.watch({}, {
+      label: 'marketplace-app:sidebar.me.bids',
+      maxWait: 2500,
+    })
+    const snapshotSubscription = stream.snapshot.subscribe(bids => {
+      setCounts(current => ({
+        ...current,
+        myBids: bidAuctions(bids).length,
+      }))
+    })
+    const statusSubscription = stream.status.subscribe(status => {
+      if (status instanceof marketplace.StreamError) {
+        console.warn('[marketplace-app] sidebar bid count stream error', status.error)
       }
-    })()
+    })
 
     return () => {
-      closed = true
-      closer?.close('sidebar bid counts changed')
+      snapshotSubscription.unsubscribe()
+      statusSubscription.unsubscribe()
+      stream.close('sidebar bid counts changed')
     }
-  }, [marketplaceSession, marketplaceState, refreshRevision, session])
+  }, [marketplaceSession, refreshRevision])
 
   return counts
 }
 
-export function useMyBidChains(
-  marketplaceState: LoadedMarketplace | undefined,
-  session: AppSession | undefined,
+export function useMyBidAuctions(
+  marketplaceSession: LoadedMarketplaceSession | undefined,
   refreshRevision: number,
 ) {
-  const [bidChains, setBidChains] = useState<MyBidChainResolution[]>([])
+  const [auctions, setAuctions] = useState<MyBidAuction[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
 
   const refresh = useCallback(async () => {
-    const marketplaceSession = marketplaceState?.runtime
-    if (!marketplaceSession || !session) {
-      setBidChains([])
+    if (!marketplaceSession) {
+      setAuctions([])
       return
     }
     setLoading(true)
     setError(undefined)
     try {
-      const localAuctionBidPubkeys = await deriveLocalAuctionBidPubkeys(session, marketplaceState)
-      const myBidGroups = await marketplaceSession.auctions.bidGroups.mine.fetch({}, { maxWait: 2500 })
-      const auctionAnchors = [...new Set(myBidGroups.map(group => group.auctionAnchor))]
-      const rows = await Promise.all(auctionAnchors.map(async auctionAnchor => {
-        try {
-          const snapshot = await marketplaceSession.auctions.scope({ auctionAnchor }).query({ maxWait: 2500 })
-          if (!snapshot.auction) return []
-          const ownChains = sortBidChains(
-            snapshot.bidChains.filter(chain => isOwnBidChain(chain, session.pubkey, localAuctionBidPubkeys)),
-          )
-          if (ownChains.length === 0) return []
-          const listing = await marketplaceSession.listings.findByAnchor(snapshot.auction.listingAnchor)
-          return ownChains.map(chain => ({
-            auction: snapshot.auction!,
-            chain,
-            listing,
-            snapshot,
-          }))
-        } catch {
-          return []
-        }
-      }))
-      setBidChains(rows.flat().sort((left, right) =>
-        right.chain.head.bid.event.created_at - left.chain.head.bid.event.created_at ||
-        right.chain.head.bid.event.id.localeCompare(left.chain.head.bid.event.id),
-      ))
+      setAuctions(bidAuctions(await marketplaceSession.me.bids.placed.list({}, { maxWait: 2500 })))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load bids')
     } finally {
       setLoading(false)
     }
-  }, [marketplaceState, session])
+  }, [marketplaceSession])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh, refreshRevision])
+    if (!marketplaceSession) {
+      setAuctions([])
+      return undefined
+    }
 
-  return { bidChains, loading, error, refresh }
+    setLoading(true)
+    setError(undefined)
+    console.debug('[marketplace-app] subscribing to my bids')
+    const stream = marketplaceSession.me.bids.placed.watch({}, {
+      label: 'marketplace-app:me.bids',
+      maxWait: 2500,
+    })
+    const snapshotSubscription = stream.snapshot.subscribe(bids => {
+      setAuctions(bidAuctions(bids))
+      setLoading(false)
+    })
+    const statusSubscription = stream.status.subscribe(status => {
+      if (status instanceof marketplace.StreamError) {
+        console.warn('[marketplace-app] my bids stream error', status.error)
+        setError(status.error.message)
+        setLoading(false)
+      }
+      if (status instanceof marketplace.StreamEose || status instanceof marketplace.StreamLive) {
+        setLoading(false)
+      }
+    })
+    return () => {
+      snapshotSubscription.unsubscribe()
+      statusSubscription.unsubscribe()
+      stream.close('marketplace route changed')
+    }
+  }, [marketplaceSession, refreshRevision])
+
+  return { auctions, loading, error, refresh }
 }
 
 export function useInboxItems(
-  marketplaceSession: LoadedMarketplace['runtime'] | undefined,
+  marketplaceSession: MarketplaceSession | undefined,
   refreshRevision: number,
 ) {
   const [inbox, setInbox] = useState<marketplace.MarketplaceInboxItem[]>([])
@@ -296,8 +288,8 @@ export function useInboxItems(
     setLoading(true)
     setError(undefined)
     try {
-      setInbox(await marketplaceSession.inbox.fetch({ limit: 100 }, {
-        label: 'marketplace-app:inbox.fetch',
+      setInbox(await marketplaceSession.me.inbox.list({ limit: 100 }, {
+        label: 'marketplace-app:me.inbox.list',
         maxWait: 2500,
       }))
     } catch (err) {
@@ -316,7 +308,7 @@ export function useInboxItems(
     setLoading(true)
     setError(undefined)
     console.debug('[marketplace-app] subscribing to marketplace inbox')
-    const stream = marketplaceSession.inbox.stream({ limit: 100 }, {
+    const stream = marketplaceSession.me.inbox.watch({ limit: 100 }, {
       label: 'marketplace-app:inbox',
       maxWait: 2500,
     })

@@ -1,29 +1,19 @@
-import { Link } from '@tanstack/react-router'
-import { ArrowRight } from 'lucide-react'
 import type * as marketplace from 'nostr-tools/marketplace'
 
 import { CodeHint } from '../codeHints/codeHints'
 import { EmptyState } from '../components/EmptyState'
 import { OrderWidget } from '../components/OrderWidget'
-import { Badge, Button } from '../components/ui'
-import { Facts } from '../components/widgets/FactList'
+import { Badge } from '../components/ui'
+import { AuctionWidget } from '../components/widgets/AuctionWidget'
 import { Page, PageHeader } from '../components/widgets/PageLayout'
-import { AuctionEndValue, TimeAgoText } from '../components/widgets/TimeText'
-import {
-  bidChainStageClass,
-  bidChainStageLabel,
-  publicBidChainBuyerPubkey,
-} from '../nostr/auctionBidChains'
-import { shortPubkey } from '../nostr/inboxThreads'
-import type { MyBidChainResolution } from '../types'
-import { formatMarketplaceAmount } from '../utils/amountDisplay'
+import type { MarketplaceClient, MarketplaceSession, MyBidAuction } from '../types'
 
 type Props = {
   onOpenThread: (group: marketplace.ParsedOrderGroup, peerRole: 'buyer' | 'seller') => void | Promise<void>
 }
 
 type OrderListPageProps = Props & {
-  codeHint: string[]
+  codeHint: string | string[]
   emptyBody: string
   emptyTitle: string
   error?: string
@@ -35,28 +25,19 @@ type OrderListPageProps = Props & {
 }
 
 type MyBidsPageProps = {
-  bidChains: MyBidChainResolution[]
+  auctions: MyBidAuction[]
   bidError?: string
   bidLoading?: boolean
+  marketplace?: MarketplaceClient
+  marketplaceSession?: MarketplaceSession
+  refreshRevision?: number
 }
 
-const myBidCodeHint = [
-  'const myBidGroups = await marketplaceSession.auctions.bidGroups.mine.fetch({}, { maxWait: 2500 })',
-  'const snapshot = await marketplaceSession.auctions.scope({ auctionAnchor }).query({ maxWait: 2500 })',
-  'const myBidChains = snapshot.bidChains.filter(chain => isOwnBidChain(chain, sessionPubkey, localBidPubkeys))',
-]
+const myBidCodeHint = 'marketplaceSession.me.bids.placed.watch()'
 
-const ordersIMadeCodeHint = [
-  'const buckets = await marketplaceSession.orders.groups.mine()',
-  'const ordersIMade = buckets.buyer',
-  'marketplaceSession.orders.groups.mine.stream({}, { maxWait: 2500 })',
-]
+const ordersIMadeCodeHint = 'marketplaceSession.me.orders.placed.watch()'
 
-const ordersOnMyListingsCodeHint = [
-  'const buckets = await marketplaceSession.orders.groups.mine()',
-  'const ordersOnMyListings = buckets.seller',
-  'marketplaceSession.orders.groups.mine.stream({}, { maxWait: 2500 })',
-]
+const ordersOnMyListingsCodeHint = 'marketplaceSession.me.orders.received.watch()'
 
 function OrderGroupList({
   emptyBody,
@@ -86,88 +67,38 @@ function OrderGroupList({
   )
 }
 
-function bidStageVariant(stageClass: string): 'default' | 'secondary' | 'destructive' {
-  if (stageClass === 'commit') return 'default'
-  if (stageClass === 'cancel') return 'destructive'
-  return 'secondary'
-}
-
-function MyBidChainCard({ row }: { row: MyBidChainResolution }) {
-  const { auction, chain, listing, snapshot } = row
-  const publicBuyerPubkey = publicBidChainBuyerPubkey(chain)
-  const stageClass = bidChainStageClass(chain, snapshot.complete)
-  const title = listing?.title ?? 'Unresolved auction listing'
-  return (
-    <article className="grid gap-3 rounded-lg border bg-muted/30 p-4">
-      <div className="flex min-w-0 items-start justify-between gap-4 max-[640px]:grid">
-        <div className="min-w-0">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {auction.currency} bid chain
-          </p>
-          <h3 className="text-base font-semibold leading-6 text-foreground">{title}</h3>
-          <p className="mt-1 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-            head {shortPubkey(chain.head.tradeId)}
-            {' · '}
-            updated <TimeAgoText seconds={chain.head.bid.event.created_at} />
-            {publicBuyerPubkey ? ` · public as ${shortPubkey(publicBuyerPubkey)}` : ' · private bidder'}
-          </p>
-        </div>
-        <Badge className="shrink-0" variant={bidStageVariant(stageClass)}>
-          {bidChainStageLabel(chain, snapshot.complete)}
-        </Badge>
-      </div>
-      <Facts
-        className="gap-x-6 gap-y-3"
-        facts={[
-          { label: 'Total bid', value: formatMarketplaceAmount(chain.amount) },
-          { label: 'Bid legs', value: chain.groups.length.toString() },
-          { label: 'Payments', value: chain.paymentEventIds.length.toString() },
-          { label: 'Complete chain', value: chain.complete ? 'Yes' : 'No' },
-          { label: 'Auction ends', value: <AuctionEndValue seconds={auction.endAt} /> },
-        ]}
-      />
-      <div className="flex min-w-0 items-center justify-between gap-3 max-[640px]:grid">
-        <span className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
-          chain {shortPubkey(chain.id)} · auction {shortPubkey(auction.auctionAnchor)}
-        </span>
-        {listing ? (
-          <Button asChild className="max-[640px]:w-full" variant="secondary">
-            <Link params={{ listingId: listing.event.id }} to="/listing/$listingId">
-              Open
-              <ArrowRight />
-            </Link>
-          </Button>
-        ) : (
-          <span className="text-sm text-muted-foreground">Listing event not loaded</span>
-        )}
-      </div>
-    </article>
-  )
-}
-
-function MyBidChainList({
-  chains,
+function MyBidAuctionList({
+  auctions,
   loading,
   error,
+  marketplace,
+  marketplaceSession,
+  refreshRevision,
 }: {
-  chains: MyBidChainResolution[]
+  auctions: MyBidAuction[]
   loading?: boolean
   error?: string
+  marketplace?: MarketplaceClient
+  marketplaceSession?: MarketplaceSession
+  refreshRevision?: number
 }) {
-  if (chains.length === 0) {
+  if (auctions.length === 0) {
     return (
       <EmptyState
         title={error ? 'Unable to load bids' : loading ? 'Loading bids' : 'No bids'}
-        body={error ?? (loading ? 'Scanning auction bid chains.' : 'Auction bids you place will appear here.')}
+        body={error ?? (loading ? 'Fetching bids.' : 'Auction bids you place will appear here.')}
       />
     )
   }
   return (
     <div className="grid gap-3">
-      {chains.map(row => (
-        <MyBidChainCard
-          key={`${row.auction.auctionAnchor}:${row.chain.id}`}
-          row={row}
+      {auctions.map(auction => (
+        <AuctionWidget
+          auctionAnchor={auction.auctionAnchor}
+          key={auction.auctionAnchor}
+          marketplace={marketplace}
+          marketplaceSession={marketplaceSession}
+          refreshRevision={refreshRevision}
         />
       ))}
     </div>
@@ -264,19 +195,33 @@ export function BuyerOrdersPage({
   )
 }
 
-export function MyBidsPage({ bidChains, bidError, bidLoading = false }: MyBidsPageProps) {
+export function MyBidsPage({
+  auctions,
+  bidError,
+  bidLoading = false,
+  marketplace,
+  marketplaceSession,
+  refreshRevision,
+}: MyBidsPageProps) {
   return (
     <Page>
       <PageHeader eyebrow="Buyer" title="My Bids" />
       <CodeHint code={myBidCodeHint} className="rounded-xl">
         <section className="grid content-start gap-3">
           <div className="flex min-w-0 items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-foreground">Bid chains</h2>
-            {bidLoading && bidChains.length > 0 && (
+            <h2 className="text-lg font-semibold text-foreground">Auctions I bid on</h2>
+            {bidLoading && auctions.length > 0 && (
               <Badge variant="secondary">Refreshing</Badge>
             )}
           </div>
-          <MyBidChainList chains={bidChains} error={bidError} loading={bidLoading} />
+          <MyBidAuctionList
+            auctions={auctions}
+            error={bidError}
+            loading={bidLoading}
+            marketplace={marketplace}
+            marketplaceSession={marketplaceSession}
+            refreshRevision={refreshRevision}
+          />
         </section>
       </CodeHint>
     </Page>

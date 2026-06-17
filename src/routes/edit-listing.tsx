@@ -13,7 +13,7 @@ function EditListingRoute() {
   const navigate = useNavigate()
   const search = Route.useSearch()
   const { state, publisher, actions } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const listing = useRouteFetch(
     () => search.listingId ? marketplaceClient.listings.findById(search.listingId) : Promise.resolve(null),
     null,

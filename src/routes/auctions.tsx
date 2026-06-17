@@ -6,13 +6,18 @@ import { useMarketplaceApp } from '../state/AppStateContext'
 
 function AuctionsRoute() {
   const { state } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const rows = useRouteFetch(
     async () => {
       const auctions = await marketplaceClient.auctions.search({ limit: 80 })
       return Promise.all(auctions.map(async auction => {
         try {
-          const snapshot = await marketplaceClient.auctions.scope({ auctionAnchor: auction.auctionAnchor }).query({ maxWait: 2500 })
+          const snapshots = await marketplaceClient.auctions.get(
+            { auctionAnchor: auction.auctionAnchor },
+            { maxWait: 2500 },
+          )
+          const snapshot = snapshots[auction.auctionAnchor]
+          if (!snapshot) throw new Error('Auction event not loaded')
           const resolvedAuction = snapshot.auction ?? auction
           return {
             auction: resolvedAuction,
@@ -36,6 +41,7 @@ function AuctionsRoute() {
       error={rows.error}
       loading={rows.loading}
       marketplace={marketplaceClient}
+      marketplaceSession={state.marketplaceSession}
       rows={rows.data}
     />
   )

@@ -1,7 +1,6 @@
 import type { Event, EventTemplate, VerifiedEvent } from 'nostr-tools/core'
 import type { SimplePool } from 'nostr-tools/pool'
 import type * as marketplace from 'nostr-tools/marketplace'
-import type { EvmMarketplacePolicyState } from '@sudonym-btc/marketplace-evm'
 
 export type AppSession = {
   pubkey: string
@@ -31,13 +30,9 @@ export type NostrPublisher = {
 }
 
 export type MarketplaceClient = ReturnType<typeof marketplace.bind>
-export type MarketplaceSession = Awaited<ReturnType<typeof marketplace.session>>
+export type MarketplaceSession = Awaited<ReturnType<MarketplaceClient['session']>>
 
-export type LoadedMarketplace = {
-  runtime: MarketplaceSession
-  nextTradeIndex: number
-  evm?: EvmMarketplacePolicyState
-}
+export type LoadedMarketplaceSession = MarketplaceSession
 
 export type MarketplaceLogItem = {
   id: number
@@ -52,23 +47,22 @@ export type MarketplaceLogItem = {
 
 export type InboxItem = marketplace.MarketplaceInboxItem
 
-export type OrderBucket = {
-  mine: marketplace.ParsedOrderGroup[]
-  onMyListings: marketplace.ParsedOrderGroup[]
+export type MyOrders = {
+  placed: marketplace.ParsedOrderGroup[]
+  received: marketplace.ParsedOrderGroup[]
+  arbitrating: marketplace.ParsedOrderGroup[]
+}
+
+export type MyBidAuction = {
+  auctionAnchor: string
+  lastBidAt: number
+  groups: marketplace.ParsedAuctionBidGroup[]
 }
 
 export type AuctionListingResolution = {
   auction: marketplace.ParsedMarketplaceAuction
   listing: marketplace.MarketplaceListing | null
   snapshot?: marketplace.MarketplaceAuctionScopeSnapshot
-  error?: string
-}
-
-export type MyBidChainResolution = {
-  auction: marketplace.ParsedMarketplaceAuction
-  chain: marketplace.ParsedAuctionBidChain
-  listing: marketplace.MarketplaceListing | null
-  snapshot: marketplace.MarketplaceAuctionScopeSnapshot
   error?: string
 }
 

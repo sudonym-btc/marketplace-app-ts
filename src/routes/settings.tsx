@@ -11,9 +11,11 @@ function SettingsRoute() {
       config={state.config}
       marketplaceLog={state.marketplaceLog}
       session={state.session}
-      marketplace={state.marketplace}
+      marketplaceSession={state.marketplaceSession}
+      loading={state.loading}
       onClearMarketplaceLog={actions.clearMarketplaceLog}
       onPaymentMethodUpdated={actions.refreshAll}
+      onRefresh={actions.refreshAll}
     />
   )
 }

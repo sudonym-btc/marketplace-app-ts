@@ -22,12 +22,12 @@ import {
 } from '../nostr/orderGroups'
 import { publishPrivateThreadReply } from '../nostr/privateMessages'
 import { fetchProfiles, type NostrProfile } from '../nostr/profiles'
-import type { AppSession, InboxItem, LoadedMarketplace, NostrPublisher } from '../types'
+import type { AppSession, InboxItem, LoadedMarketplaceSession, NostrPublisher } from '../types'
 
 type Props = {
   inbox: InboxItem[]
   orderGroups: marketplace.ParsedOrderGroup[]
-  marketplaceState?: LoadedMarketplace
+  marketplaceSession?: LoadedMarketplaceSession
   targetThread?: { conversation: string; participants: string[] }
   loading?: boolean
   error?: string
@@ -58,11 +58,10 @@ function sourceOrderForCancel(group: marketplace.ParsedOrderGroup): marketplace.
 
 async function deriveBuyerSecretForOrderGroup(
   group: marketplace.ParsedOrderGroup,
-  marketplaceState: LoadedMarketplace | undefined,
+  marketplaceSession: LoadedMarketplaceSession | undefined,
   session: AppSession,
 ): Promise<{ index: number; secretKey: Uint8Array } | undefined> {
   const targetPubkey = buyerPubkeyForOrderGroup(group)
-  const marketplaceSession = marketplaceState?.runtime
   if (!targetPubkey || !marketplaceSession) return undefined
   const seedEvent = marketplaceSession.seed.event ?? (await marketplaceSession.seed.ensureCreated()).event
   const payload = marketplace.seed.parsePayload(await session.signer.nip44Decrypt(session.pubkey, seedEvent.content))
@@ -95,7 +94,7 @@ function routedConversationGroup(
 export function InboxPage({
   inbox,
   orderGroups,
-  marketplaceState,
+  marketplaceSession,
   targetThread,
   loading = false,
   error,
@@ -200,12 +199,12 @@ export function InboxPage({
     try {
       const template = marketplace.orders.cancelTemplate({
         tradeId: group.tradeId,
-        listingAnchor: group.listingAnchor,
+        anchors: [{ value: group.listingAnchor, marker: 'listing' }],
         refs: { orders: [source.event.id] },
         reason: 'cancelled',
         participants: group.participants.length > 0 ? group.participants : source.participants,
       })
-      const buyerSecret = await deriveBuyerSecretForOrderGroup(group, marketplaceState, session)
+      const buyerSecret = await deriveBuyerSecretForOrderGroup(group, marketplaceSession, session)
       const buyerPubkey = buyerPubkeyForOrderGroup(group)
       const canSignAsPublicParticipant =
         buyerPubkey === session.pubkey ||

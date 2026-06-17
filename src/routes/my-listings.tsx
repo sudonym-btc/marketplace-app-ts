@@ -7,7 +7,7 @@ import { useMarketplaceApp } from '../state/AppStateContext'
 
 function MyListingsRoute() {
   const { state } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const sessionPubkey = state.session?.pubkey
   const listings = useRouteFetch(
     async () => {

@@ -18,12 +18,11 @@ function RootLayout() {
   return (
     <Shell
       session={state.session}
-      marketplace={state.marketplace}
+      marketplaceSession={state.marketplaceSession}
       refreshRevision={state.refreshRevision}
       status={state.status}
       loading={state.loading}
       error={state.error}
-      onRefresh={actions.refreshAll}
       onLogout={actions.clearSession}
     >
       <Outlet />

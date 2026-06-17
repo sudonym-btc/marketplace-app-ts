@@ -9,14 +9,14 @@ import { LocalCashuEscrowStore } from '../cashu/storage'
 import { createEvmChainConfigs } from '../evm/config'
 import { LocalOperationStore } from '../evm/operationStore'
 import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreStoredSession } from '../nostr/session'
-import type { AppSession, LoadedMarketplace, MarketplaceLogItem, SessionRestoreError } from '../types'
+import type { AppSession, LoadedMarketplaceSession, MarketplaceClient, MarketplaceLogItem, SessionRestoreError } from '../types'
 import { createAppLocationProvider } from '../nostr/locationProvider'
 
 export type AppState = {
   config: AppConfig
   session?: AppSession
-  publicMarketplace: ReturnType<typeof marketplace.bind>
-  marketplace?: LoadedMarketplace
+  marketplace: MarketplaceClient
+  marketplaceSession?: LoadedMarketplaceSession
   refreshRevision: number
   marketplaceLog: MarketplaceLogItem[]
   loading: boolean
@@ -47,19 +47,13 @@ function isPromiseLike<Result>(value: Result): value is Result & PromiseLike<unk
   return Boolean(value && typeof value === 'object' && 'then' in value && typeof value.then === 'function')
 }
 
-function asMarketplaceOrderPolicy(policy: unknown): marketplace.MarketplaceOrderPolicy {
-  return policy as marketplace.MarketplaceOrderPolicy
-}
-
-function asMarketplaceBidPolicy(policy: unknown): marketplace.MarketplaceBidPolicy {
-  return policy as marketplace.MarketplaceBidPolicy
-}
-
 export function useAppState() {
   const [config] = useState(loadAppConfig)
   const [publicPool] = useState(() => new SimplePool())
   const [session, setSession] = useState<AppSession>()
-  const [loadedMarketplace, setLoadedMarketplace] = useState<LoadedMarketplace>()
+  const [signedMarketplace, setSignedMarketplace] = useState<MarketplaceClient>()
+  const [marketplaceSession, setMarketplaceSession] = useState<LoadedMarketplaceSession>()
+  const [paymentSweeps, setPaymentSweeps] = useState<marketplace.MarketplaceMePaymentsStream>()
   const [refreshRevision, setRefreshRevision] = useState(0)
   const [marketplaceLog, setMarketplaceLog] = useState<MarketplaceLogItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -160,21 +154,22 @@ export function useAppState() {
     [config.relays, publicPool],
   )
   const locationProvider = useMemo(() => createAppLocationProvider(), [])
-  const publicMarketplace = useMemo(
+  const defaultMarketplace = useMemo(
     () => marketplace.bind(publicReader.pool, publicReader.relays, { logger: marketplaceLogger, locationProvider }),
     [locationProvider, marketplaceLogger, publicReader],
   )
+  const activeMarketplace = signedMarketplace ?? defaultMarketplace
   const appPublisher = useMemo(() => (session ? publisher(session) : undefined), [session])
 
   const initializeMarketplace = useCallback(
-    async (nextSession: AppSession): Promise<LoadedMarketplace> => {
+    async (nextSession: AppSession): Promise<LoadedMarketplaceSession> => {
       console.debug('[marketplace-app] initializing marketplace runtime', {
         pubkey: nextSession.pubkey,
         relayCount: nextSession.relays.length,
       })
       const pub = publisher(nextSession)
-      const orderPolicies: marketplace.MarketplaceOrderPolicy[] = []
-      const bidPolicies: marketplace.MarketplaceBidPolicy[] = []
+      const orderDrivers: marketplace.MarketplaceOrderDriver[] = []
+      const auctionDrivers: marketplace.MarketplaceAuctionDriver[] = []
       const evmChains = createEvmChainConfigs(config)
       const cashuStorage = new LocalCashuEscrowStore()
       const evmEscrowPolicy = evmChains.length > 0
@@ -209,13 +204,13 @@ export function useAppState() {
             logger: marketplaceLogger,
           })
         : null
-      if (evmEscrowPolicy) orderPolicies.push(asMarketplaceOrderPolicy(evmEscrowPolicy))
-      if (evmAuctionPolicy) bidPolicies.push(asMarketplaceBidPolicy(evmAuctionPolicy))
-      if (cashuEscrowPolicy) orderPolicies.push(asMarketplaceOrderPolicy(cashuEscrowPolicy))
-      if (cashuAuctionPolicy) bidPolicies.push(asMarketplaceBidPolicy(cashuAuctionPolicy))
+      if (evmEscrowPolicy) orderDrivers.push(evmEscrowPolicy)
+      if (evmAuctionPolicy) auctionDrivers.push(evmAuctionPolicy)
+      if (cashuEscrowPolicy) orderDrivers.push(cashuEscrowPolicy)
+      if (cashuAuctionPolicy) auctionDrivers.push(cashuAuctionPolicy)
       console.debug('[marketplace-app] marketplace payment policies configured', {
-        orderPolicyCount: orderPolicies.length,
-        bidPolicyCount: bidPolicies.length,
+        orderDriverCount: orderDrivers.length,
+        auctionDriverCount: auctionDrivers.length,
         evmEnabled: Boolean(evmEscrowPolicy || evmAuctionPolicy),
         evmChainCount: evmChains.length,
         cashuEnabled: Boolean(cashuEscrowPolicy || cashuAuctionPolicy),
@@ -223,21 +218,23 @@ export function useAppState() {
       })
 
       setStatus('Initializing marketplace runtime')
-      const runtime = await marketplace.session(nextSession.pool, nextSession.relays, nextSession.signer, {
+      const boundMarketplace = marketplace.bind(nextSession.pool, nextSession.relays, {
+        logger: marketplaceLogger,
+        locationProvider,
+      })
+      const runtime = await boundMarketplace.session(nextSession.signer, {
         pubkey: nextSession.pubkey,
-        orderPolicies,
-        bidPolicies,
+        orderDrivers,
+        auctionDrivers,
         autoTrustArbiter: config.autoTrustArbiterPubkeys,
         publish: event => pub.publish(event),
-        locationProvider,
-        logger: marketplaceLogger,
       })
       console.debug('[marketplace-app] marketplace runtime initialized', {
         seedCreated: runtime.seed.created,
         seedEventId: runtime.seed.event?.id,
       })
       setStatus('Starting marketplace policies')
-      const started = await runtime.start({ unusedWindow: 25 })
+      const started = await runtime.start()
       console.debug('[marketplace-app] marketplace runtime started', {
         nextUnusedIndex: started.discovery.nextUnusedIndex,
         maxUsedIndex: started.discovery.maxUsedIndex,
@@ -247,24 +244,18 @@ export function useAppState() {
         assetCount: started.assets.length,
       })
 
-      const loaded: LoadedMarketplace = {
-        runtime,
-        nextTradeIndex: started.discovery.nextUnusedIndex,
-        evm: evmEscrowPolicy?.state() ?? evmAuctionPolicy?.state() ?? {
-          enabled: false,
-          started: false,
-          maxUsedIndex: -1,
-          nextTradeIndex: started.discovery.nextUnusedIndex,
-          startSummary: 'EVM disabled',
-        },
-      }
-      setLoadedMarketplace(loaded)
-      console.debug('[marketplace-app] marketplace initialization complete', {
-        nextTradeIndex: loaded.nextTradeIndex,
-        evmStarted: loaded.evm?.started,
-        evmSummary: loaded.evm?.startSummary,
+      setSignedMarketplace(boundMarketplace)
+      const nextPaymentSweeps = runtime.me.payments.watch()
+      setPaymentSweeps(current => {
+        current?.close('session replaced')
+        return nextPaymentSweeps
       })
-      return loaded
+      setMarketplaceSession(runtime)
+      console.debug('[marketplace-app] marketplace initialization complete', {
+        nextTradeIndex: runtime.nextTradeIndex.value ?? started.discovery.nextUnusedIndex,
+        paymentSweepStatus: nextPaymentSweeps.status.latest?.constructor.name,
+      })
+      return runtime
     },
     [config, locationProvider, marketplaceLogger],
   )
@@ -284,19 +275,6 @@ export function useAppState() {
     }
   }, [])
 
-  const markTradeIndexUsed = useCallback((index: number) => {
-    console.debug('[marketplace-app] marking trade index used', { index })
-    setLoadedMarketplace(current => current
-      ? {
-          ...current,
-          nextTradeIndex: Math.max(current.nextTradeIndex, index + 1),
-          ...(current.evm
-            ? { evm: { ...current.evm, nextTradeIndex: Math.max(current.evm.nextTradeIndex, index + 1) } }
-            : {}),
-        }
-      : current)
-  }, [])
-
   const attachSession = useCallback(
     async (nextSession: AppSession) => {
       setLoading(true)
@@ -307,7 +285,7 @@ export function useAppState() {
         const nextMarketplace = await initializeMarketplace(nextSession)
         setRefreshRevision(current => current + 1)
         console.debug('[marketplace-app] session attached and marketplace runtime ready', {
-          nextTradeIndex: nextMarketplace.nextTradeIndex,
+          nextTradeIndex: nextMarketplace.nextTradeIndex.value,
         })
         setStatus('Ready')
       } catch (err) {
@@ -339,7 +317,12 @@ export function useAppState() {
       const message = err instanceof Error ? err.message : 'Saved signer session could not be restored'
       console.warn('[marketplace-app] session restore failed', err)
       setSession(undefined)
-      setLoadedMarketplace(undefined)
+      setSignedMarketplace(undefined)
+      setMarketplaceSession(undefined)
+      setPaymentSweeps(current => {
+        current?.close('session restore failed')
+        return undefined
+      })
       setSessionError({
         title: timedOut ? 'Signer reconnect timed out' : 'Signer restore failed',
         message: timedOut
@@ -358,15 +341,18 @@ export function useAppState() {
 
   const clearSession = useCallback(() => {
     console.debug('[marketplace-app] clearing active marketplace session')
+    paymentSweeps?.close('session cleared')
     session?.pool.close(session.relays)
     clearStoredSession()
     setSession(undefined)
-    setLoadedMarketplace(undefined)
+    setSignedMarketplace(undefined)
+    setMarketplaceSession(undefined)
+    setPaymentSweeps(undefined)
     setError(undefined)
     setSessionError(undefined)
     setRefreshRevision(current => current + 1)
     setStatus('Ready')
-  }, [session])
+  }, [paymentSweeps, session])
 
   const clearMarketplaceLog = useCallback(() => {
     setMarketplaceLog([])
@@ -376,8 +362,8 @@ export function useAppState() {
     state: {
       config,
       session,
-      publicMarketplace,
-      marketplace: loadedMarketplace,
+      marketplace: activeMarketplace,
+      marketplaceSession,
       refreshRevision,
       marketplaceLog,
       loading,
@@ -394,7 +380,6 @@ export function useAppState() {
       clearSession,
       setError,
       setStatus,
-      markTradeIndexUsed,
       clearMarketplaceLog,
     },
   }

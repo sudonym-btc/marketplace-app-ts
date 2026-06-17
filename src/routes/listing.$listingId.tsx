@@ -8,7 +8,7 @@ function ListingRoute() {
   const { listingId } = Route.useParams()
   const navigate = useNavigate()
   const { state, publisher, actions } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const listing = useRouteFetch(
     () => marketplaceClient.listings.findById(listingId),
     null,
@@ -19,11 +19,10 @@ function ListingRoute() {
     <ListingDetailPage
       listing={listing.data ?? undefined}
       marketplace={marketplaceClient}
-      marketplaceState={state.marketplace}
+      marketplaceSession={state.marketplaceSession}
       session={state.session}
       publisher={publisher}
       evmBlockExplorerUrl={state.config.evm.blockExplorerUrl}
-      onTradeIndexUsed={actions.markTradeIndexUsed}
       onPublished={actions.refreshAll}
       onError={actions.setError}
       onLoginRequired={message => {

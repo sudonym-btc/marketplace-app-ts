@@ -84,6 +84,8 @@ const developmentServiceHostPrefixes: Record<string, string> = {
 
 const defaultDemoAccounts: DemoAccountConfig[] = [
   { id: 'buyer', label: 'Buyer', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsmhltgl' },
+  { id: 'buyerOne', label: 'Buyer One', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqgscfuyzx' },
+  { id: 'buyerTwo', label: 'Buyer Two', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfqz4mxun' },
   { id: 'sellerOpen', label: 'Seller - no methods', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyqsnlj9hy' },
   { id: 'sellerEvm', label: 'Seller - EVM', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqypqfr48f3' },
   { id: 'sellerCashu', label: 'Seller - Cashu', nsec: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqypsuzaluz' },

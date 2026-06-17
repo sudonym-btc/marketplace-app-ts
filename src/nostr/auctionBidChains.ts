@@ -1,7 +1,5 @@
 import * as marketplace from 'nostr-tools/marketplace'
 
-import type { AppSession, LoadedMarketplace } from '../types'
-
 function safeUnits(value: string | undefined): bigint {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n
 }
@@ -52,28 +50,27 @@ export function publicBidChainBuyerPubkey(chain: marketplace.ParsedAuctionBidCha
   return publicBidBuyerPubkey(chain.head) ?? chain.groups.map(publicBidBuyerPubkey).find(Boolean)
 }
 
-function bidGroupBuyerParticipantPubkey(group: marketplace.ParsedAuctionBidGroup): string | undefined {
-  return group.participants.find(participant => participant.role === 'buyer')?.pubkey
-    ?? group.bid.participants.find(participant => participant.role === 'buyer')?.pubkey
+function bidGroupKey(group: marketplace.ParsedAuctionBidGroup): string {
+  return `${group.auctionAnchor}:${group.tradeId}`
 }
 
 export function isOwnBidChain(
   chain: marketplace.ParsedAuctionBidChain,
-  sessionPubkey: string | undefined,
-  localAuctionBidPubkeys: Set<string>,
+  ownBidGroups: Iterable<marketplace.ParsedAuctionBidGroup>,
 ): boolean {
-  return chain.groups.some(group => {
-    const buyerPubkey = bidGroupBuyerParticipantPubkey(group)
-    if (localAuctionBidPubkeys.has(group.bid.event.pubkey)) return true
-    if (buyerPubkey && localAuctionBidPubkeys.has(buyerPubkey)) return true
-    if (group.payments.some(payment =>
-      localAuctionBidPubkeys.has(payment.event.pubkey) ||
-      payment.participants.some(participant =>
-        participant.role === 'buyer' && localAuctionBidPubkeys.has(participant.pubkey),
-      ),
-    )) return true
-    return Boolean(sessionPubkey && publicBidBuyerPubkey(group) === sessionPubkey)
-  })
+  const ownGroupKeys = new Set<string>()
+  const ownBidIds = new Set<string>()
+  const ownPaymentIds = new Set<string>()
+  for (const group of ownBidGroups) {
+    ownGroupKeys.add(bidGroupKey(group))
+    ownBidIds.add(group.bid.event.id)
+    for (const payment of group.payments) ownPaymentIds.add(payment.event.id)
+  }
+  return chain.groups.some(group =>
+    ownGroupKeys.has(bidGroupKey(group)) ||
+    ownBidIds.has(group.bid.event.id) ||
+    group.payments.some(payment => ownPaymentIds.has(payment.event.id)),
+  )
 }
 
 export function bidChainStageLabel(
@@ -100,26 +97,4 @@ export function bidChainStageClass(
   }
   if (!chain.complete || chain.groups.some(group => group.paymentNack)) return 'cancel'
   return ''
-}
-
-export async function deriveLocalAuctionBidPubkeys(
-  session: AppSession | undefined,
-  marketplaceState: LoadedMarketplace | undefined,
-): Promise<Set<string>> {
-  const marketplaceSession = marketplaceState?.runtime
-  if (!session || !marketplaceState || !marketplaceSession) return new Set()
-
-  const seedEvent = marketplaceSession.seed.event ?? (await marketplaceSession.seed.ensureCreated()).event
-  const payload = marketplace.seed.parsePayload(await session.signer.nip44Decrypt(session.pubkey, seedEvent.content))
-  const limit = Math.max(500, marketplaceState.nextTradeIndex + 32)
-  const pubkeys = new Set<string>()
-  for (let index = 0; index < limit; index += 1) {
-    const material = marketplace.seed.deriveTradeMaterial(payload.seed, {
-      index,
-      role: 'buyer',
-      extra: 'auction-bid',
-    })
-    pubkeys.add(material.tradePubkey)
-  }
-  return pubkeys
 }

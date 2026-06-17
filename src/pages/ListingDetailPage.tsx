@@ -40,7 +40,6 @@ import { AuctionEndValue, TimeAgoText } from '../components/widgets/TimeText'
 import {
   bidChainStageClass,
   bidChainStageLabel,
-  deriveLocalAuctionBidPubkeys,
   isOwnBidChain,
   isWinningBidChain,
   publicBidBuyerPubkey,
@@ -49,7 +48,7 @@ import {
 } from '../nostr/auctionBidChains'
 import { shortPubkey } from '../nostr/inboxThreads'
 import { fetchProfiles, type NostrProfile } from '../nostr/profiles'
-import type { AppSession, LoadedMarketplace, NostrPublisher } from '../types'
+import type { AppSession, LoadedMarketplaceSession, NostrPublisher } from '../types'
 import {
   formatDecimalUnits,
   formatDenominatedUnits,
@@ -67,11 +66,10 @@ import {
 type Props = {
   listing?: marketplaceSdk.MarketplaceListing
   marketplace: ReturnType<typeof marketplaceSdk.bind>
-  marketplaceState?: LoadedMarketplace
+  marketplaceSession?: LoadedMarketplaceSession
   session?: AppSession
   publisher?: NostrPublisher
   evmBlockExplorerUrl?: string
-  onTradeIndexUsed(index: number): void
   onPublished(): void
   onError(error: string): void
   onLoginRequired(message: string): void
@@ -208,8 +206,14 @@ function arbiterProfileLabel(pubkey: string, profile?: NostrProfile): string {
   return label === shortPubkey(pubkey) ? label : `${label} (${shortPubkey(pubkey)})`
 }
 
-function serviceChoiceKey(service: marketplaceSdk.ParsedArbitrationService): string {
-  return service.event.id
+function routeChoiceKey(route: marketplaceSdk.MarketplacePaymentRoute): string {
+  return JSON.stringify([
+    route.arbitrationService.event.id,
+    route.descriptor.id,
+    route.descriptor.type,
+    route.descriptor.hash ?? null,
+    route.asset.assetId,
+  ])
 }
 
 function routeAmountForCurrency(currency: string): marketplaceSdk.MarketplaceAmount {
@@ -237,7 +241,7 @@ function arbiterChoicesForRoutes(
     }
     if (!choicesByPubkey.has(pubkey)) choicesByPubkey.set(pubkey, choice)
 
-    const key = serviceChoiceKey(route.arbitrationService)
+    const key = routeChoiceKey(route)
     if (!choice.services.some(service => service.key === key)) {
       choice.services.push({
         key,
@@ -264,18 +268,6 @@ function serviceChoiceLabel(choice: ArbitrationServiceChoice): string {
 
 function routeSummary(route: marketplaceSdk.MarketplacePaymentRoute | undefined, service: ArbitrationServiceChoice | undefined): string | undefined {
   return paymentRouteSummary(route, service?.service.content.type)
-}
-
-function routeCurrency(asset: marketplaceSdk.MarketplacePaymentAsset): string {
-  return denomination(asset.currency ?? asset.denomination)
-}
-
-function bidRouteMatchesAuction(
-  route: marketplaceSdk.MarketplacePaymentRoute,
-  auction: marketplaceSdk.ParsedMarketplaceAuction,
-): boolean {
-  return route.arbitrationService.event.pubkey === auction.arbiterPubkey &&
-    routeCurrency(route.asset) === denomination(auction.currency)
 }
 
 function dateTimeLocalFromSeconds(seconds: number): string {
@@ -509,11 +501,10 @@ function sortBidGroups(groups: marketplaceSdk.ParsedAuctionBidGroup[]): marketpl
 
 function latestOwnBidChain(
   chains: marketplaceSdk.ParsedAuctionBidChain[],
-  sessionPubkey: string | undefined,
-  localAuctionBidPubkeys: Set<string>,
+  ownBidGroups: marketplaceSdk.ParsedAuctionBidGroup[],
 ): marketplaceSdk.ParsedAuctionBidChain | undefined {
   return sortBidChains(
-    chains.filter(chain => isOwnBidChain(chain, sessionPubkey, localAuctionBidPubkeys)),
+    chains.filter(chain => isOwnBidChain(chain, ownBidGroups)),
   )[0]
 }
 
@@ -524,11 +515,10 @@ function uniqueCurrencies(listing: marketplaceSdk.MarketplaceListing | undefined
 export function ListingDetailPage({
   listing,
   marketplace,
-  marketplaceState,
+  marketplaceSession,
   session,
   publisher,
   evmBlockExplorerUrl,
-  onTradeIndexUsed,
   onPublished,
   onError,
   onLoginRequired,
@@ -587,12 +577,13 @@ export function ListingDetailPage({
   const [bidFlowError, setBidFlowError] = useState<string>()
   const [bidPublic, setBidPublic] = useState(DEFAULT_BID_PUBLIC)
   const [bidPaymentPrivate, setBidPaymentPrivate] = useState(false)
-  const [selectedBidRoute, setSelectedBidRoute] = useState<marketplaceSdk.MarketplacePaymentRoute>()
+  const [bidRouteChoices, setBidRouteChoices] = useState<ArbiterChoice[]>([])
+  const [selectedBidServiceKey, setSelectedBidServiceKey] = useState('')
   const [bidRouteLoading, setBidRouteLoading] = useState(false)
   const [bidRouteError, setBidRouteError] = useState<string>()
   const [bidArbiterProfile, setBidArbiterProfile] = useState<NostrProfile>()
   const [bidPreviousChainSnapshot, setBidPreviousChainSnapshot] = useState<marketplaceSdk.ParsedAuctionBidChain>()
-  const [localAuctionBidPubkeys, setLocalAuctionBidPubkeys] = useState<Set<string>>(() => new Set())
+  const [ownAuctionBidGroups, setOwnAuctionBidGroups] = useState<marketplaceSdk.ParsedAuctionBidGroup[]>([])
   const [expandedBidGroupKey, setExpandedBidGroupKey] = useState<string>()
   const price = listing?.prices[0]
   const listingAnchorValue = useMemo(() => listing ? marketplace.listings.anchor(listing) : '', [listing, marketplace])
@@ -663,31 +654,35 @@ export function ListingDetailPage({
       : { valid: true },
     [offerAmount, offerMaximum, offerMinimum, price, priceCurrencyDecimals],
   )
-  const marketplaceSession = marketplaceState?.runtime
-
   useEffect(() => {
     if (!offerTouched) setOfferAmount(total ?? '')
   }, [offerTouched, total])
 
   useEffect(() => {
-    if (!session || !marketplaceState || !marketplaceSession) {
-      setLocalAuctionBidPubkeys(new Set())
-      return
+    if (!marketplaceSession) {
+      setOwnAuctionBidGroups([])
+      return undefined
     }
-    let closed = false
-    void (async () => {
-      try {
-        const pubkeys = await deriveLocalAuctionBidPubkeys(session, marketplaceState)
-        if (!closed) setLocalAuctionBidPubkeys(pubkeys)
-      } catch (err) {
-        console.warn('[marketplace-app] unable to derive local auction bid pubkeys', err)
-        if (!closed) setLocalAuctionBidPubkeys(new Set())
+
+    const stream = marketplaceSession.me.bids.placed.watch({}, {
+      label: 'marketplace-app:listing.me.bids',
+      maxWait: 2500,
+    })
+    const snapshotSubscription = stream.snapshot.subscribe(bids => {
+      setOwnAuctionBidGroups(bids)
+    })
+    const statusSubscription = stream.status.subscribe(status => {
+      if (status instanceof marketplaceSdk.StreamError) {
+        console.warn('[marketplace-app] unable to load owned auction bid groups', status.error)
+        setOwnAuctionBidGroups([])
       }
-    })()
+    })
     return () => {
-      closed = true
+      snapshotSubscription.unsubscribe()
+      statusSubscription.unsubscribe()
+      stream.close('listing bids changed')
     }
-  }, [marketplaceState, session])
+  }, [marketplaceSession])
 
   useEffect(() => {
     setAuctionCurrency(current => current || availableAuctionCurrencies[0] || price?.currency || '')
@@ -776,125 +771,58 @@ export function ListingDetailPage({
       setAuctions([])
       setBidGroupsByAuction({})
       setAuctionCompletesByAuction({})
+      setAuctionLoading(false)
+      setAuctionError(undefined)
       return
     }
 
     let closed = false
-    let closer: { close(reason?: string): void } | undefined
     setAuctionLoading(true)
     setAuctionError(undefined)
+    const stream = marketplace.auctions.watch(
+      { listingAnchor: listingAnchorValue },
+      { label: `listing-auction-scope:${listingAnchorValue}`, maxWait: 2500 },
+    )
 
-    void marketplace.auctions.search({ listingAnchor: listingAnchorValue, limit: 20 })
-      .then(nextAuctions => {
-        if (!closed) setAuctions(nextAuctions)
-      })
-      .catch(err => {
-        if (!closed) setAuctionError(err instanceof Error ? err.message : 'Unable to load auctions')
-      })
-	      .finally(() => {
-	        if (!closed) setAuctionLoading(false)
-	      })
-
-    try {
-      closer = marketplace.auctions.subscribe(
-        { listingAnchor: listingAnchorValue, limit: 20 },
-        {
-          onauctions(nextAuctions) {
-            if (!closed) setAuctions(nextAuctions)
-          },
-          oninvalid(event, error) {
-            console.warn('[marketplace-app] ignoring invalid auction event', { eventId: event.id }, error)
-          },
-        },
-        { label: `listing-auctions:${listingAnchorValue}` },
-      )
-	    } catch (err) {
-	      console.warn('[marketplace-app] unable to subscribe to listing auctions', err)
-	    }
-
-	    return () => {
-	      closed = true
-	      closer?.close('listing changed')
-	    }
-	  }, [listing, listingAnchorValue, marketplace])
-
-  useEffect(() => {
-    if (auctions.length === 0) {
-      setBidGroupsByAuction({})
-      setAuctionCompletesByAuction({})
-      return
-    }
-
-    let closed = false
-    const closers: Array<{ close(reason?: string): void }> = []
-    const auctionAnchors = auctions.map(auction => auction.auctionAnchor)
-
-    for (const auction of auctions) {
-      const scope = marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 })
-      function applySnapshot(snapshot: marketplaceSdk.MarketplaceAuctionScopeSnapshot) {
-        setBidGroupsByAuction(current => ({
-          ...current,
-          [auction.auctionAnchor]: sortBidGroups(snapshot.bidGroups),
-        }))
-        setAuctionCompletesByAuction(current => {
-          const next = { ...current }
-          if (snapshot.complete) next[auction.auctionAnchor] = snapshot.complete
-          else delete next[auction.auctionAnchor]
-          return next
-        })
+    const snapshotSubscription = stream.snapshot.subscribe(snapshots => {
+      if (closed) return
+      setAuctions(Object.values(snapshots)
+        .map(snapshot => snapshot.auction)
+        .filter((auction): auction is marketplaceSdk.ParsedMarketplaceAuction => Boolean(auction))
+        .sort((left, right) => right.event.created_at - left.event.created_at))
+      setBidGroupsByAuction(Object.fromEntries(
+        Object.entries(snapshots).map(([auctionAnchor, snapshot]) => [
+          auctionAnchor,
+          sortBidGroups(snapshot.bidGroups),
+        ]),
+      ))
+      setAuctionCompletesByAuction(Object.fromEntries(
+        Object.entries(snapshots)
+          .filter((entry): entry is [string, marketplaceSdk.MarketplaceAuctionScopeSnapshot & {
+            complete: marketplaceSdk.ParsedMarketplaceAuctionComplete
+          }] => Boolean(entry[1].complete))
+          .map(([auctionAnchor, snapshot]) => [auctionAnchor, snapshot.complete]),
+      ))
+    })
+    const statusSubscription = stream.status.subscribe(status => {
+      if (status instanceof marketplaceSdk.StreamError) {
+        console.warn('[marketplace-app] ignoring invalid listing auction scope event', {
+          listingAnchor: listingAnchorValue,
+        }, status.error)
+        setAuctionError(status.error.message)
+        setAuctionLoading(false)
+      } else if (status instanceof marketplaceSdk.StreamEose || status instanceof marketplaceSdk.StreamLive) {
+        setAuctionLoading(false)
       }
-
-      void scope.query({ maxWait: 2500 })
-        .then(snapshot => {
-          if (!closed) {
-            applySnapshot(snapshot)
-          }
-        })
-        .catch(err => {
-          console.warn('[marketplace-app] unable to query auction scope', {
-            auctionAnchor: auction.auctionAnchor,
-          }, err)
-      })
-
-      try {
-        const stream = scope.stream({ label: `auction-scope:${auction.auctionAnchor}`, maxWait: 2500 })
-        const snapshotSubscription = stream.snapshot.subscribe(snapshot => {
-          if (!closed) {
-            applySnapshot(snapshot)
-          }
-        })
-        const statusSubscription = stream.status.subscribe(status => {
-          if (status instanceof marketplaceSdk.StreamError) {
-            console.warn('[marketplace-app] ignoring invalid auction scope event', {
-              auctionAnchor: auction.auctionAnchor,
-            }, status.error)
-          }
-        })
-        closers.push({
-          close(reason?: string) {
-            snapshotSubscription.unsubscribe()
-            statusSubscription.unsubscribe()
-            stream.close(reason)
-          },
-        })
-      } catch (err) {
-        console.warn('[marketplace-app] unable to subscribe to auction scope', {
-          auctionAnchor: auction.auctionAnchor,
-        }, err)
-      }
-    }
+    })
 
     return () => {
       closed = true
-      for (const closer of closers) closer.close('listing auctions changed')
-      setBidGroupsByAuction(current => Object.fromEntries(
-        Object.entries(current).filter(([anchor]) => auctionAnchors.includes(anchor)),
-      ))
-      setAuctionCompletesByAuction(current => Object.fromEntries(
-        Object.entries(current).filter(([anchor]) => auctionAnchors.includes(anchor)),
-      ))
+      snapshotSubscription.unsubscribe()
+      statusSubscription.unsubscribe()
+      stream.close('listing auctions changed')
     }
-  }, [auctions, marketplace])
+  }, [listing, listingAnchorValue, marketplace])
 
   const selectedArbiter = useMemo(
     () => arbiterChoices.find(choice => choice.pubkey === selectedArbiterPubkey),
@@ -921,6 +849,15 @@ export function ListingDetailPage({
     ),
     [auctions, bidAuctionAnchor, bidAuctionSnapshot],
   )
+  const selectedBidArbiter = useMemo(
+    () => bidRouteChoices.find(choice => choice.pubkey === bidAuction?.arbiterPubkey) ?? bidRouteChoices[0],
+    [bidAuction, bidRouteChoices],
+  )
+  const selectedBidService = useMemo(
+    () => selectedBidArbiter?.services.find(service => service.key === selectedBidServiceKey),
+    [selectedBidArbiter, selectedBidServiceKey],
+  )
+  const selectedBidRoute = selectedBidService?.route
   const bidAuctionChains = useMemo(
     () => bidAuction ? (bidChainsByAuction[bidAuction.auctionAnchor] ?? []) : [],
     [bidAuction, bidChainsByAuction],
@@ -1027,11 +964,12 @@ export function ListingDetailPage({
 
   useEffect(() => {
     if (auctionModalOpen && auctionCurrency) void loadAuctionArbiterChoices(auctionCurrency)
-  }, [auctionCurrency, auctionModalOpen, listing, marketplaceState])
+  }, [auctionCurrency, auctionModalOpen, listing, marketplaceSession])
 
   useEffect(() => {
     if (!bidAuction || !listing || !marketplaceSession || !bidRouteAmount) {
-      setSelectedBidRoute(undefined)
+      setBidRouteChoices([])
+      setSelectedBidServiceKey('')
       setBidRouteLoading(false)
       setBidRouteError(undefined)
       setBidArbiterProfile(undefined)
@@ -1043,26 +981,37 @@ export function ListingDetailPage({
     setBidRouteError(undefined)
     void (async () => {
       try {
-        const route = await resolveBidPaymentRoute(bidAuction, bidRouteAmount)
+        const routes = await resolveBidPaymentRoutes(bidAuction, bidRouteAmount)
         if (closed) return
-        setSelectedBidRoute(route)
-        if (!route) {
-          setBidRouteError(`No supported ${bidAuction.currency} bid payment route for this auction arbiter`)
-        }
+        const arbiterPubkeys = [...new Set([
+          bidAuction.arbiterPubkey,
+          ...routes.map(route => route.arbitrationService.event.pubkey),
+        ])]
+        let profiles = new Map<string, NostrProfile>()
         if (session) {
           try {
-            const profiles = await fetchProfiles(session, [bidAuction.arbiterPubkey])
-            if (!closed) setBidArbiterProfile(profiles.get(bidAuction.arbiterPubkey))
+            profiles = await fetchProfiles(session, arbiterPubkeys)
           } catch (err) {
             console.warn('[marketplace-app] unable to fetch bid arbiter profile', {
               arbiterPubkey: bidAuction.arbiterPubkey,
             }, err)
-            if (!closed) setBidArbiterProfile(undefined)
           }
         }
+        if (closed) return
+        const choices = arbiterChoicesForRoutes(routes, profiles)
+        setBidRouteChoices(choices)
+        if (routes.length === 0) {
+          setBidRouteError(`No supported ${bidAuction.currency} bid payment route for this auction arbiter`)
+        }
+        const services = choices.flatMap(choice => choice.services)
+        const currentService = services.find(service => service.key === selectedBidServiceKey && service.route)
+        const firstUsableService = services.find(service => service.route)
+        setSelectedBidServiceKey(currentService?.key ?? firstUsableService?.key ?? '')
+        setBidArbiterProfile(profiles.get(bidAuction.arbiterPubkey))
       } catch (err) {
         if (!closed) {
-          setSelectedBidRoute(undefined)
+          setBidRouteChoices([])
+          setSelectedBidServiceKey('')
           setBidRouteError(readableError(err, 'Unable to load bid payment route'))
         }
       } finally {
@@ -1107,17 +1056,15 @@ export function ListingDetailPage({
     setSelectedAuctionServiceKey(firstUsableService?.key ?? '')
   }
 
-  async function resolveBidPaymentRoute(
+  async function resolveBidPaymentRoutes(
     auction: marketplaceSdk.ParsedMarketplaceAuction,
     amount: marketplaceSdk.MarketplaceAmount,
-  ): Promise<marketplaceSdk.MarketplacePaymentRoute | undefined> {
-    if (!listing || !marketplaceSession) return undefined
-    const bidRoutes = await marketplaceSession.paymentRoutes.forListing(listing, {
+  ): Promise<marketplaceSdk.MarketplacePaymentRoute[]> {
+    if (!listing || !marketplaceSession) return []
+    const bidRoutes = await marketplaceSession.auctions.paymentRoutes(listing, auction, {
       amount,
-      purpose: 'bid',
     })
-    const route = bidRoutes.find(candidate => bidRouteMatchesAuction(candidate, auction))
-    if (!route) {
+    if (bidRoutes.length === 0) {
       console.warn('[marketplace-app] no matching auction bid route', {
         auctionAnchor: auction.auctionAnchor,
         arbiterPubkey: auction.arbiterPubkey,
@@ -1134,7 +1081,7 @@ export function ListingDetailPage({
         })),
       })
     }
-    return route
+    return bidRoutes
   }
 
   async function loadArbiterChoices() {
@@ -1151,10 +1098,9 @@ export function ListingDetailPage({
         sellerPubkey: listing.event.pubkey,
         denomination: price.currency,
       })
-      const amount = marketplaceSession.listings.price(listing, { start, end })
-      const routes = await marketplaceSession.paymentRoutes.forListing(listing, {
+      const amount = marketplace.listings.price(listing, { start, end })
+      const routes = await marketplaceSession.orders.paymentRoutes(listing, {
         amount,
-        purpose: 'order',
       })
       if (routes.length === 0) {
         setArbiterChoices([])
@@ -1205,9 +1151,8 @@ export function ListingDetailPage({
     setAuctionArbiterError(undefined)
     try {
       const amount = routeAmountForCurrency(currency)
-      const routes = await marketplaceSession.paymentRoutes.forListing(listing, {
+      const routes = await marketplaceSession.auctions.paymentRoutes(listing, {
         amount,
-        purpose: 'bid',
       })
       if (routes.length === 0) {
         setAuctionArbiterChoices([])
@@ -1238,7 +1183,7 @@ export function ListingDetailPage({
 
   function openAuctionModal() {
     if (!listing || !isSeller) return
-    if (!session || !publisher || !marketplaceState) {
+    if (!session || !publisher || !marketplaceSession) {
       onLoginRequired('Sign in as the seller to create auctions')
       return
     }
@@ -1258,7 +1203,7 @@ export function ListingDetailPage({
   }
 
   async function createAuction() {
-    if (!session || !publisher || !marketplaceState) {
+    if (!session || !publisher || !marketplaceSession) {
       onLoginRequired('Sign in as the seller to create auctions')
       return
     }
@@ -1334,7 +1279,7 @@ export function ListingDetailPage({
 
   function openBidModal(auction: marketplaceSdk.ParsedMarketplaceAuction) {
     const chains = bidChainsByAuction[auction.auctionAnchor] ?? []
-    const previousChain = latestOwnBidChain(chains, session?.pubkey, localAuctionBidPubkeys)
+    const previousChain = latestOwnBidChain(chains, ownAuctionBidGroups)
     setBidAuctionAnchor(auction.auctionAnchor)
     setBidAuctionSnapshot(auction)
     setBidPreviousChainSnapshot(previousChain)
@@ -1346,7 +1291,8 @@ export function ListingDetailPage({
     setBidFlowError(undefined)
     setBidPublic(DEFAULT_BID_PUBLIC)
     setBidPaymentPrivate(false)
-    setSelectedBidRoute(undefined)
+    setBidRouteChoices([])
+    setSelectedBidServiceKey('')
     setBidRouteLoading(true)
     setBidRouteError(undefined)
     setBidArbiterProfile(undefined)
@@ -1358,7 +1304,8 @@ export function ListingDetailPage({
     setBidPreviousChainSnapshot(undefined)
     setBidPublic(DEFAULT_BID_PUBLIC)
     setBidPaymentPrivate(false)
-    setSelectedBidRoute(undefined)
+    setBidRouteChoices([])
+    setSelectedBidServiceKey('')
     setBidRouteLoading(false)
     setBidRouteError(undefined)
     setBidArbiterProfile(undefined)
@@ -1411,11 +1358,10 @@ export function ListingDetailPage({
         denomination: bidAuction.currency,
         decimals: bidAuction.decimals,
       }
-      const bidRoute = selectedBidRoute ?? await resolveBidPaymentRoute(bidAuction, amount)
+      const bidRoute = selectedBidRoute
       if (!bidRoute) {
-        throw new Error(`No supported ${bidAuction.currency} bid payment route for this auction arbiter`)
+        throw new Error(`Choose a supported ${bidAuction.currency} bid payment route`)
       }
-      setSelectedBidRoute(bidRoute)
       const states = marketplaceSession.auctions.bid(listing, {
         auctionAnchor: bidAuction.auctionAnchor,
         listingAnchor: listingAnchorValue,
@@ -1451,7 +1397,7 @@ export function ListingDetailPage({
       }, {
         auction: bidAuction.event,
         route: bidRoute,
-        identityProof: bidPublic ? 'public' : 'none',
+        identityProofPrivacy: bidPublic ? 'public' : 'none',
         paymentProofPrivacy: bidPaymentPrivate ? 'sealed' : 'public',
       })
 
@@ -1519,7 +1465,6 @@ export function ListingDetailPage({
         end: end || undefined,
         amount: amountForNegotiation(offerAmount || total, price.currency),
       })
-      if (result.accountIndex !== undefined) onTradeIndexUsed(result.accountIndex)
       onPublished()
       setNegotiateOpen(false)
       console.debug('[marketplace-app] negotiation offer published', {
@@ -1537,7 +1482,7 @@ export function ListingDetailPage({
 
   async function startCheckout() {
     if (!listing || !price || total === undefined) return
-    if (!session || !publisher || !marketplaceState) {
+    if (!session || !publisher || !marketplaceSession) {
       console.warn('[marketplace-app] checkout attempted before marketplace runtime is ready', {
         listingId: listing.event.id,
       })
@@ -1585,7 +1530,7 @@ export function ListingDetailPage({
         decimals: route.asset.decimals,
         policyId: route.descriptor.id,
       })
-      const paymentAmount = marketplaceSession.listings.price(listing, { start, end })
+      const paymentAmount = marketplace.listings.price(listing, { start, end })
       console.debug('[marketplace-app] checkout payment amount calculated', {
         listingId: listing.event.id,
         value: paymentAmount.value,
@@ -1599,7 +1544,7 @@ export function ListingDetailPage({
         amount: paymentAmount,
       }, {
         route,
-        identityProof: checkoutPublic ? 'public' : 'none',
+        identityProofPrivacy: checkoutPublic ? 'public' : 'none',
         paymentProofPrivacy: checkoutPaymentPrivate ? 'sealed' : 'public',
       })
       for await (const paymentState of paymentStates) {
@@ -1687,7 +1632,7 @@ export function ListingDetailPage({
         {listing.summary && <p className="mt-3 text-lg leading-8 text-muted-foreground">{listing.summary}</p>}
         <p className={cn(listing.summary ? 'text-sm leading-6' : 'mt-3 text-lg leading-8', 'text-muted-foreground')}>{listing.description}</p>
         <CodeHint
-          code="marketplace.reviews.search({ listingAnchor: listingAnchorValue, limit: 80 }, { maxWait: 1500 })"
+          code="marketplace.reviews.search({ listingAnchor: listingAnchorValue, limit: 80 })"
           className="rounded-xl"
         >
           <ListingReviews
@@ -1698,13 +1643,7 @@ export function ListingDetailPage({
           />
         </CodeHint>
         <CodeHint
-          code={[
-            'marketplace.auctions.search({ listingAnchor: listingAnchorValue, limit: 20 })',
-            'marketplace.auctions.subscribe({ listingAnchor: listingAnchorValue, limit: 20 }, handlers)',
-            'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).query({ maxWait: 2500 })',
-            'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).stream({ maxWait: 2500 })',
-            'auctionScope.filter(marketplace.auctionScopes.isBid)',
-          ]}
+          code="marketplace.auctions.watch({ listingAnchor: listingAnchorValue })"
           className="mt-6 rounded-xl"
         >
           <section className="grid gap-3">
@@ -1716,7 +1655,7 @@ export function ListingDetailPage({
               {isSeller && (
                 <Button
                   variant="secondary"
-                  disabled={!marketplaceState || auctionPublishing}
+                  disabled={!marketplaceSession || auctionPublishing}
                   onClick={openAuctionModal}
                 >
                   Create auction
@@ -1793,9 +1732,8 @@ export function ListingDetailPage({
                             return (
                               <CodeHint
                                 code={[
-                                  'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).query({ maxWait: 2500 })',
-                                  'marketplace.auctions.scope({ auctionAnchor: auction.auctionAnchor, limit: 100 }).stream({ maxWait: 2500 })',
-                                  'auctionScope.filter(marketplace.auctionScopes.isBid)',
+                                  'const auctions = await marketplace.auctions.get({ auctionAnchor: auction.auctionAnchor })',
+                                  'marketplace.auctions.watch({ auctionAnchor: auction.auctionAnchor })',
                                 ]}
                                 className="rounded-lg"
                                 key={bidGroupKey}
@@ -1825,9 +1763,9 @@ export function ListingDetailPage({
       </div>
 	      <CodeHint
 	        code={[
-	          'const amount = marketplaceSession.listings.price(listing, { start, end })',
-	          "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'order' })",
-	          'marketplaceSession.pay(listing, order, { route, identityProof, paymentProofPrivacy })',
+	          'const amount = marketplace.listings.price(listing, { start, end })',
+	          'const route = await marketplaceSession.orders.paymentRoute(listing, { amount })',
+	          'marketplaceSession.pay(listing, order, { route, identityProofPrivacy, paymentProofPrivacy })',
 	        ]}
         className="sticky top-7 rounded-xl"
       >
@@ -1919,8 +1857,8 @@ export function ListingDetailPage({
           </DialogHeader>
 	          <CodeHint
 	            code={[
-	              'const amount = marketplaceSession.listings.price(listing, { start, end })',
-	              "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'order' })",
+	              'const amount = marketplace.listings.price(listing, { start, end })',
+	              'const route = await marketplaceSession.orders.paymentRoute(listing, { amount })',
             ]}
             className="grid gap-4 rounded-xl"
           >
@@ -2043,7 +1981,7 @@ export function ListingDetailPage({
                 </DialogDescription>
               </DialogHeader>
               <CodeHint
-                code="marketplaceSession.pay(listing, order, { route, identityProof, paymentProofPrivacy })"
+                code="marketplaceSession.pay(listing, order, { route, identityProofPrivacy, paymentProofPrivacy })"
                 className="grid gap-4 rounded-xl"
               >
                 <PaymentStatusPanel
@@ -2102,7 +2040,7 @@ export function ListingDetailPage({
 	          <CodeHint
 	            code={[
 	              'const amount = routeAmountForCurrency(currency)',
-	              "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'bid' })",
+	              'const route = await marketplaceSession.auctions.paymentRoute(listing, { amount })',
 	              'marketplace.auctions.template(auction)',
 	              'publisher.sign(template)',
 	              'publisher.publish(event)',
@@ -2277,8 +2215,9 @@ export function ListingDetailPage({
 		            {bidAuction && (
 		            <CodeHint
 		              code={[
-		                "marketplaceSession.paymentRoutes.forListing(listing, { amount, purpose: 'bid' })",
-		                'marketplaceSession.auctions.bid(listing, bid, { auction: bidAuction.event, route: bidRoute, identityProof, paymentProofPrivacy })',
+		                'const bidRoutes = await marketplaceSession.auctions.paymentRoutes(listing, bidAuction.event, { amount })',
+		                'const bidRoute = bidRoutes.find(route => route.descriptor.id === selectedRouteId)',
+		                'marketplaceSession.auctions.bid(listing, bid, { auction: bidAuction.event, route: bidRoute, identityProofPrivacy, paymentProofPrivacy })',
 		              ]}
 		              className="grid gap-4 rounded-xl"
 		            >
@@ -2354,16 +2293,36 @@ export function ListingDetailPage({
             <AdvancedAccordion
               title="Advanced bid settings"
               summary={[
-                routeSummary(selectedBidRoute, undefined) ?? (bidRouteLoading ? 'Loading route' : bidRouteError ? 'Route unavailable' : 'No route selected'),
+                routeSummary(selectedBidRoute, selectedBidService) ?? (bidRouteLoading ? 'Loading route' : bidRouteError ? 'Route unavailable' : 'No route selected'),
                 bidPublic ? 'Public identity' : '',
                 bidPaymentPrivate ? 'Private payment proof' : '',
               ].filter(Boolean).join(', ')}
             >
+              <Field label="Bid payment route">
+                <Select
+                  value={selectedBidServiceKey}
+                  disabled={bidRouteLoading || bidPublishing || !selectedBidArbiter || selectedBidArbiter.services.length === 0}
+                  onValueChange={setSelectedBidServiceKey}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder={bidRouteLoading ? 'Loading routes...' : selectedBidArbiter ? 'Choose route' : 'No route available'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(selectedBidArbiter?.services ?? []).map(choice => (
+                      <SelectItem key={choice.key} value={choice.key} disabled={!choice.route}>
+                        {serviceChoiceLabel(choice)}
+                        {choice.disabledReason ? ` - ${choice.disabledReason}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
               <PaymentRouteSummary
                 arbiterPubkey={bidAuction.arbiterPubkey}
                 fallback={bidRouteLoading ? 'Loading bid payment route' : bidRouteError ?? 'No supported bid payment route for this auction arbiter'}
-                profile={bidArbiterProfile}
+                profile={selectedBidArbiter?.profile ?? bidArbiterProfile}
                 route={selectedBidRoute}
+                serviceType={selectedBidService?.service.content.type}
               />
               <PrivacyOption
                 id="bid-public"
@@ -2395,7 +2354,7 @@ export function ListingDetailPage({
                 Cancel
               </Button>
               <Button
-                disabled={bidPublishing || !bidAmountValidation.valid}
+                disabled={bidPublishing || bidRouteLoading || !selectedBidRoute || !bidAmountValidation.valid}
                 onClick={submitBid}
               >
                 {bidPublishing

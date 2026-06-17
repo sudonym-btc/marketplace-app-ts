@@ -104,7 +104,7 @@ function OrderListingPreview({
 
 export function OrderWidget({ group, compact = false, onOpen, onCancel, onMessageArbiter }: Props) {
   const { state } = useMarketplaceApp()
-  const marketplaceClient = state.marketplace?.runtime ?? state.publicMarketplace
+  const marketplaceClient = state.marketplace
   const [listingState, setListingState] = useState<ListingState>({ status: 'idle' })
   const cancellable = orderGroupCancellable(group)
   const arbiterPubkey = arbiterPubkeyForOrderGroup(group)
