@@ -6,6 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "stack:up": "npm --prefix ../.. run up",
+    "stack:down": "npm --prefix ../.. run down",
+    "up": "npm run stack:up && npm run dev",
+    "down": "npm run stack:down",
     "routes:generate": "tsr generate",
     "build": "npm run routes:generate && tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",

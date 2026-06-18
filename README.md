@@ -17,18 +17,67 @@ This repo is designed to run inside the NMDK dependency tree beside:
 - `../nostr-tools`
 - `../marketplace-evm-ts`
 
-## Run
+## One-command local demo
+
+From this folder:
+
+```sh
+npm install
+npm run up
+```
+
+`npm run up` starts the full NMDK local stack from the parent repository and then
+starts the Vite client. Open `http://localhost:5178`.
+
+The stack launcher starts:
+
+- shared regtest Bitcoin, marketplace LND, LNbits, and Alby Hub
+- EVM/Boltz services, local Arbitrum and Rootstock RPCs, AA bundler, and paymaster
+- Cashu sat/USD mints and the local Nostr relay
+- Signet remote signer, Blossom upload server, and local HTTPS development proxy
+- deterministic marketplace seed data, Signet keys, and arbiter daemons
+
+The same launch from the NMDK root is:
+
+```sh
+npm run demo:up
+```
+
+For deterministic one-command launches, the parent stack resets disposable
+EVM/Boltz regtest volumes by default. Prefix the command with
+`MARKETPLACE_EVM_RESET_ON_UP=0` only when you deliberately want to preserve
+those volumes.
+
+If the stack is in a bad state, pull everything down and launch it again:
+
+```sh
+npm run down
+npm run up
+```
+
+Docker Desktop or another Docker daemon must be running before launching the
+stack.
+
+## App-only development
 
 ```sh
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5178`.
+Use app-only development when the NMDK services are already running. Open
+`http://localhost:5178`.
 
 Development mode loads `.env.development`, which points at the standalone NMDK
 localhost ports. `npm run up` at the NMDK root refreshes `.env.local` from the
 generated stack configs.
+
+## Compile checks
+
+```sh
+npm run check
+npm run build
+```
 
 ## Notes
 
