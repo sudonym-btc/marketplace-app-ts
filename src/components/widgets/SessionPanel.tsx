@@ -52,7 +52,7 @@ export function SessionPanel({ loading, marketplaceSession, onLogout, session, s
         <Eyebrow className="text-sidebar-foreground/60">Status</Eyebrow>
         <div className="mt-2 flex min-w-0 items-center gap-2 text-sm font-semibold">
           {loading && <LoadingSpinner label={status} />}
-          <span className="truncate">{status}</span>
+          <span className="truncate" data-testid="app-status">{status}</span>
         </div>
       </div>
       {marketplaceSession && (

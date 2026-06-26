@@ -188,11 +188,13 @@ function currencyAmountLimitFromDecimal(
   }
 }
 
-function amountForNegotiation(value: string, denomination: string): marketplaceSdk.MarketplaceAmount {
+function amountForNegotiation(value: string, currency: string): marketplaceSdk.MarketplaceAmount {
   const parsed = parseDecimalAmount(value)
+  const normalized = denomination(currency)
   return {
-    value,
-    denomination,
+    value: parsed.units.toString(),
+    currency: normalized,
+    denomination: normalized,
     decimals: parsed.decimals,
   }
 }
@@ -352,10 +354,14 @@ function AuctionBidChainAccordion({
     0,
   )
   return (
-    <div className={`rounded-lg border ${isWinningBidChain(chain, complete) ? 'bg-muted/50' : 'bg-muted/30'}`}>
+    <div
+      className={`rounded-lg border ${isWinningBidChain(chain, complete) ? 'bg-muted/50' : 'bg-muted/30'}`}
+      data-testid="auction-bid-chain"
+    >
       <button
         aria-expanded={expanded}
         className="flex w-full min-w-0 items-center justify-between gap-4 rounded-lg p-3 text-left outline-none transition hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+        data-testid="auction-bid-chain-toggle"
         onClick={onToggle}
         type="button"
       >
@@ -1624,7 +1630,10 @@ export function ListingDetailPage({
 
   const image = listing.images[0]?.url
   return (
-    <section className="grid grid-cols-[minmax(0,1fr)_360px] items-start gap-6 p-7 max-[860px]:grid-cols-1">
+    <section
+      className="grid grid-cols-[minmax(0,1fr)_360px] items-start gap-6 p-7 max-[860px]:grid-cols-1"
+      data-testid="listing-detail"
+    >
       <div className="min-w-0">
         {image && <img className="mb-5 h-[390px] w-full rounded-xl object-cover max-[860px]:h-64" src={image} alt="" />}
         <Eyebrow className="mb-2">{listing.location || 'Classified'}</Eyebrow>
@@ -1696,6 +1705,7 @@ export function ListingDetailPage({
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-4">
                         {!isSeller && (
                           <Button
+                            data-testid="place-bid-button"
                             disabled={!isLive || bidPublishing}
                             onClick={() => {
                               if (!session) onLoginRequired('Sign in to place auction bids')
@@ -1789,11 +1799,11 @@ export function ListingDetailPage({
             <strong className="min-w-0 text-right [overflow-wrap:anywhere]">{formattedTotal}</strong>
           </div>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-2">
-            <Button disabled={publishing || !price} onClick={startCheckout}>
+            <Button data-testid="checkout-button" disabled={publishing || !price} onClick={startCheckout}>
               {publishing ? 'Working...' : 'Checkout'}
             </Button>
             {listing.negotiable && (
-              <Button variant="secondary" disabled={publishing || !price} onClick={openNegotiateDialog}>
+              <Button data-testid="negotiate-button" variant="secondary" disabled={publishing || !price} onClick={openNegotiateDialog}>
                 Negotiate
               </Button>
             )}
@@ -1821,6 +1831,7 @@ export function ListingDetailPage({
               <Field label="Amount">
                 <CurrencyInput
                   currency={price.currency}
+                  data-testid="negotiation-amount-input"
                   decimals={priceCurrencyDecimals}
                   max={offerMaximum}
                   min={offerMinimum}
@@ -1840,7 +1851,7 @@ export function ListingDetailPage({
             <Button variant="secondary" disabled={publishing} onClick={() => setNegotiateOpen(false)}>
               Cancel
             </Button>
-            <Button disabled={publishing || !offerAmountValidation.valid} onClick={() => void negotiate()}>
+            <Button data-testid="send-offer-button" disabled={publishing || !offerAmountValidation.valid} onClick={() => void negotiate()}>
               {publishing ? 'Sending...' : 'Send offer'}
             </Button>
           </DialogFooter>
@@ -1951,6 +1962,7 @@ export function ListingDetailPage({
                 Refresh
               </Button>
               <Button
+                data-testid="checkout-continue-button"
                 disabled={publishing || arbiterPickerLoading || !selectedRoute}
                 onClick={confirmArbiterSelection}
               >
@@ -1966,7 +1978,7 @@ export function ListingDetailPage({
               <DialogTitle className="sr-only">Purchase submitted</DialogTitle>
               <FlowDoneView body="The order and payment proof were published." />
               <DialogFooter>
-                <Button onClick={() => setCheckoutPaymentOpen(false)}>
+                <Button data-testid="checkout-done-button" onClick={() => setCheckoutPaymentOpen(false)}>
                   Done
                 </Button>
               </DialogFooter>
@@ -2198,7 +2210,7 @@ export function ListingDetailPage({
               <DialogTitle className="sr-only">Bid submitted</DialogTitle>
               <FlowDoneView body="The bid and payment proof were published." />
               <DialogFooter>
-                <Button onClick={closeBidModal}>
+                <Button data-testid="bid-done-button" onClick={closeBidModal}>
                   Done
                 </Button>
               </DialogFooter>
@@ -2261,6 +2273,7 @@ export function ListingDetailPage({
             <Field label={bidPreviousChain ? 'Add amount' : 'Bid amount'}>
               <CurrencyInput
                 currency={bidAuction.currency}
+                data-testid="bid-amount-input"
                 decimals={bidAuction.decimals}
                 min={bidMinimum}
                 required
@@ -2354,6 +2367,7 @@ export function ListingDetailPage({
                 Cancel
               </Button>
               <Button
+                data-testid="bid-continue-button"
                 disabled={bidPublishing || bidRouteLoading || !selectedBidRoute || !bidAmountValidation.valid}
                 onClick={submitBid}
               >

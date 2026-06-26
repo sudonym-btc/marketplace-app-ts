@@ -101,6 +101,7 @@ export function LoginPage({ relays, nip46Relays, signetUrl, demoAccounts, loadin
                 {demoAccounts.map(account => (
                   <Button
                     key={account.id}
+                    data-testid={`demo-login-${account.id}`}
                     disabled={waiting || loading}
                     onClick={() => void demoLogin(account)}
                     variant="secondary"

@@ -150,6 +150,7 @@ export function OrderWidget({ group, compact = false, onOpen, onCancel, onMessag
 
   return (
     <Card
+      data-testid="order-card"
       className={cn(
         'grid min-w-0 gap-3 p-4 shadow-none',
         compact && 'gap-2 bg-muted/40 p-3',

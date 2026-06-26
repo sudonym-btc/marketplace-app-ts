@@ -110,6 +110,11 @@ function failedPublishReason(result: PromiseSettledResult<string>): string | und
   return undefined
 }
 
+async function relayHasEvent(pool: SimplePool, relays: string[], eventId: string): Promise<boolean> {
+  const events = await pool.querySync(relays, { ids: [eventId], limit: 1 }, { maxWait: 2_500 })
+  return events.some(event => event.id === eventId)
+}
+
 async function connectAndAuthenticateRelays(pool: SimplePool, relays: string[], signer: AppSigner): Promise<void> {
   enableNip42Auth(pool, signer)
   console.debug('[marketplace-app] connecting relays with NIP-42 auth enabled', {
@@ -248,6 +253,14 @@ export function publisher(session: AppSession): NostrPublisher {
       const results = await Promise.allSettled(pubs)
       const failures = results.map(failedPublishReason).filter(reason => reason !== undefined)
       if (failures.length === results.length) {
+        if (await relayHasEvent(session.pool, session.relays, event.id)) {
+          console.warn('[marketplace-app] nostr event publish timed out but event is visible on relay', {
+            eventId: event.id,
+            kind: event.kind,
+            failureCount: failures.length,
+          })
+          return
+        }
         console.warn('[marketplace-app] nostr event publish failed on every relay', {
           eventId: event.id,
           kind: event.kind,

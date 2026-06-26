@@ -383,7 +383,7 @@ function LifecycleFacts({ facts }: { facts: LifecycleFact[] }) {
 
 function LifecycleEventPanel({ item }: { item: LifecycleItem }) {
   return (
-    <div className="grid gap-3 rounded-lg border bg-background p-3">
+    <div className="grid gap-3 rounded-lg border bg-background p-3" data-testid="payment-lifecycle-event">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 gap-2">
           <span className="mt-0.5 text-muted-foreground">{item.icon}</span>
@@ -438,6 +438,7 @@ function PaymentLifecycleAccordion({
       <button
         aria-expanded={expanded}
         className="flex w-full min-w-0 items-center justify-between gap-3 rounded-lg p-3 text-left outline-none transition hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+        data-testid="payment-lifecycle-toggle"
         onClick={() => setExpanded(value => !value)}
         type="button"
       >
@@ -491,7 +492,7 @@ export function PaymentLifecycles({
   }
 
   return (
-    <div className={cn('grid gap-2', className)}>
+    <div className={cn('grid gap-2', className)} data-testid="payment-lifecycles">
       {lifecycles.map(lifecycle => (
         <PaymentLifecycleAccordion
           evmBlockExplorerUrl={evmBlockExplorerUrl}

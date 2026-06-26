@@ -86,6 +86,7 @@ export function InvoiceBox({ label = 'Lightning invoice', value }: InvoiceBoxPro
       <Input
         aria-label={label}
         className="h-8 bg-muted/50 font-mono text-xs"
+        data-testid="invoice-input"
         readOnly
         value={value}
         onFocus={event => event.currentTarget.select()}

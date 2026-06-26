@@ -840,10 +840,11 @@ async function main(): Promise<void> {
     await authenticateRelays(pool, relays, signer)
     console.log('[arbiter] signer connected', { pubkey, relays })
 
-    const runtime = await marketplace.session(pool, relays, signer, {
+    const boundMarketplace = marketplace.bind(pool, relays)
+    const runtime = await boundMarketplace.session(signer, {
       pubkey,
-      orderPolicies: build.orderPolicies,
-      bidPolicies: build.bidPolicies,
+      orderDrivers: build.orderPolicies,
+      auctionDrivers: build.bidPolicies,
       publish: publishTracked,
     })
     const started = await runtime.start({ unusedWindow: 25 })
