@@ -292,6 +292,7 @@ export function CodeHint({ children, className, code, language = 'tsx' }: CodeHi
           'pointer-events-none absolute inset-0 z-20 flex items-start justify-center overflow-visible rounded-[inherit] border border-primary/20 bg-background/55 p-3 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_12px_40px_rgba(0,0,0,0.18)] backdrop-blur-md transition-opacity duration-500',
           temporarilyHidden ? 'opacity-0' : 'opacity-100',
         )}
+        data-code-hint-overlay="true"
       >
         <div
           className={cn(
