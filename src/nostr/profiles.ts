@@ -9,6 +9,8 @@ export type NostrProfile = {
   displayName?: string
   picture?: string
   nip05?: string
+  lud16?: string
+  lud06?: string
   about?: string
 }
 
@@ -39,8 +41,10 @@ function parseProfile(pubkey: string, event: Event): NostrProfile {
         ? json.image
         : undefined
     const nip05 = typeof json.nip05 === 'string' ? json.nip05 : undefined
+    const lud16 = typeof json.lud16 === 'string' ? json.lud16 : undefined
+    const lud06 = typeof json.lud06 === 'string' ? json.lud06 : undefined
     const about = typeof json.about === 'string' ? json.about : undefined
-    return { pubkey, name, displayName, picture, nip05, about }
+    return { pubkey, name, displayName, picture, nip05, lud16, lud06, about }
   } catch (err) {
     console.warn('[marketplace-app] unable to parse profile metadata', { pubkey, eventId: event.id }, err)
     return { pubkey }

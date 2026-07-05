@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as marketplace from 'nostr-tools/marketplace'
 import { SimplePool } from 'nostr-tools/pool'
 import { createCashuAuctionPolicy, createCashuEscrowPolicy } from '@sudonym-btc/marketplace-cashu'
@@ -8,8 +8,10 @@ import { loadAppConfig, type AppConfig } from '../config/appConfig'
 import { LocalCashuEscrowStore } from '../cashu/storage'
 import { createEvmChainConfigs } from '../evm/config'
 import { LocalOperationStore } from '../evm/operationStore'
+import { createLnurlPayInvoice } from '../lightning/lnurl'
 import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreStoredSession } from '../nostr/session'
-import type { AppSession, LoadedMarketplaceSession, MarketplaceClient, MarketplaceLogItem, SessionRestoreError } from '../types'
+import { fetchProfiles } from '../nostr/profiles'
+import type { AppNotification, AppSession, LoadedMarketplaceSession, MarketplaceClient, MarketplaceLogItem, SessionRestoreError } from '../types'
 import { createAppLocationProvider } from '../nostr/locationProvider'
 
 export type AppState = {
@@ -19,6 +21,7 @@ export type AppState = {
   marketplaceSession?: LoadedMarketplaceSession
   refreshRevision: number
   marketplaceLog: MarketplaceLogItem[]
+  notifications: AppNotification[]
   loading: boolean
   restoringSigner: boolean
   status: string
@@ -30,6 +33,74 @@ type AppLoggerContext = {
   scope?: string
   span?: string
   data?: Record<string, unknown>
+}
+
+function dataString(data: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = data?.[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function dataNumber(data: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = data?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function sweepAmountSats(record: marketplace.MarketplacePaymentSweepRecord): number | undefined {
+  const data = record.latest?.data
+  const direct = dataNumber(data, 'amountSats')
+  if (direct !== undefined) return direct
+  const sweeps = data?.sweeps
+  if (!Array.isArray(sweeps)) return undefined
+  return sweeps.reduce<number | undefined>((total, sweep) => {
+    if (!sweep || typeof sweep !== 'object') return total
+    const amount = dataNumber(sweep as Record<string, unknown>, 'amountSats')
+    if (amount === undefined) return total
+    return (total ?? 0) + amount
+  }, undefined)
+}
+
+function formatSats(amountSats: number | undefined): string | undefined {
+  if (amountSats === undefined) return undefined
+  return `${new Intl.NumberFormat().format(amountSats)} sats`
+}
+
+function paymentSweepNotification(
+  record: marketplace.MarketplacePaymentSweepRecord,
+): Omit<AppNotification, 'id' | 'at'> | undefined {
+  const driver = record.driver ? record.driver.toUpperCase() : 'Marketplace'
+  const tradeId = record.tradeId ? ` for ${record.tradeId}` : ''
+  if (record.status === 'swept') {
+    const amount = formatSats(sweepAmountSats(record))
+    return {
+      level: 'info',
+      title: 'Withdrawal submitted',
+      message: amount
+        ? `${driver} payout${tradeId} is being swapped out to your Lightning address (${amount}).`
+        : `${driver} payout${tradeId} is being swapped out to your Lightning address.`,
+    }
+  }
+  if (record.status === 'failed') {
+    return {
+      level: 'error',
+      title: 'Withdrawal failed',
+      message: record.error ?? `${driver} payout${tradeId} could not be swept.`,
+    }
+  }
+  if (record.status !== 'noop') return undefined
+
+  const reason = dataString(record.latest?.data, 'reason') ?? record.error
+  if (!reason) return undefined
+  if (/no local .* beneficiary|no .* balances? .*sweepable|cannot sweep .*driver|has no payment sweep hook/i.test(reason)) {
+    return undefined
+  }
+  const isActionable = record.reason === 'settlement' || /invoice|unable|cannot|requires|not configured|failed/i.test(reason)
+  if (!isActionable) return undefined
+  const isError = /invoice|unable|cannot|requires|not configured|failed/i.test(reason)
+  return {
+    level: isError ? 'error' : 'info',
+    title: isError ? 'Withdrawal could not be started' : 'No withdrawal available',
+    message: `${driver} payout${tradeId}: ${reason}.`,
+  }
 }
 
 function mergeLogData(
@@ -56,12 +127,33 @@ export function useAppState() {
   const [paymentSweeps, setPaymentSweeps] = useState<marketplace.MarketplaceMePaymentsStream>()
   const [refreshRevision, setRefreshRevision] = useState(0)
   const [marketplaceLog, setMarketplaceLog] = useState<MarketplaceLogItem[]>([])
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [loading, setLoading] = useState(false)
   const [restoringSigner, setRestoringSigner] = useState(false)
   const [status, setStatus] = useState('Ready')
   const [error, setError] = useState<string>()
   const [sessionError, setSessionError] = useState<SessionRestoreError>()
   const nextLogId = useRef(0)
+  const nextNotificationId = useRef(0)
+  const notifiedPaymentSweeps = useRef(new Set<string>())
+
+  const notify = useCallback((notification: Omit<AppNotification, 'id' | 'at'> & { at?: string | number | Date }) => {
+    const at = notification.at instanceof Date
+      ? notification.at.toISOString()
+      : typeof notification.at === 'number'
+        ? new Date(notification.at).toISOString()
+        : notification.at ?? new Date().toISOString()
+    setNotifications(current => [
+      {
+        id: nextNotificationId.current++,
+        at,
+        level: notification.level,
+        title: notification.title,
+        ...(notification.message ? { message: notification.message } : {}),
+      },
+      ...current,
+    ].slice(0, 8))
+  }, [])
 
   const appendMarketplaceLog = useCallback((
     entry: Omit<MarketplaceLogItem, 'id' | 'at'> & { at?: string | number | Date },
@@ -149,6 +241,22 @@ export function useAppState() {
     return createLogger({ scope: 'marketplace.app' })
   }, [appendMarketplaceLog])
 
+  useEffect(() => {
+    notifiedPaymentSweeps.current.clear()
+    if (!paymentSweeps) return undefined
+    const subscription = paymentSweeps.snapshot.subscribe(snapshot => {
+      for (const record of snapshot.all) {
+        const notification = paymentSweepNotification(record)
+        if (!notification) continue
+        const key = `${record.paymentId}:${record.status}:${record.attempts}`
+        if (notifiedPaymentSweeps.current.has(key)) continue
+        notifiedPaymentSweeps.current.add(key)
+        notify(notification)
+      }
+    })
+    return () => subscription.unsubscribe()
+  }, [paymentSweeps, notify])
+
   const publicReader = useMemo(
     () => ({ pool: publicPool, relays: config.relays }),
     [config.relays, publicPool],
@@ -172,10 +280,27 @@ export function useAppState() {
       const auctionDrivers: marketplace.MarketplaceAuctionDriver[] = []
       const evmChains = createEvmChainConfigs(config)
       const cashuStorage = new LocalCashuEscrowStore()
+      const createWithdrawalInvoice = async (amountSats: number, description?: string): Promise<string> => {
+        try {
+          const profiles = await fetchProfiles(nextSession, [nextSession.pubkey])
+          const profile = profiles.get(nextSession.pubkey)
+          if (!profile?.lud16) throw new Error('Your Nostr profile does not have a lud16 Lightning address')
+          return await createLnurlPayInvoice(profile.lud16, amountSats, description)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Unable to create payout invoice'
+          notify({
+            level: 'error',
+            title: 'Unable to create payout invoice',
+            message,
+          })
+          throw err
+        }
+      }
       const evmEscrowPolicy = evmChains.length > 0
         ? createEvmEscrowPolicy({
             chains: evmChains,
             operationStore: new LocalOperationStore(),
+            withdrawals: { createInvoice: createWithdrawalInvoice },
             appId: 'marketplace',
             logger: marketplaceLogger,
           })
@@ -184,6 +309,7 @@ export function useAppState() {
         ? createEvmAuctionPolicy({
             chains: evmChains,
             operationStore: new LocalOperationStore(),
+            withdrawals: { createInvoice: createWithdrawalInvoice },
             appId: 'marketplace',
             logger: marketplaceLogger,
           })
@@ -192,6 +318,7 @@ export function useAppState() {
         ? createCashuEscrowPolicy({
             mints: config.cashu.mints,
             storage: cashuStorage,
+            withdrawals: { createInvoice: createWithdrawalInvoice },
             appId: 'marketplace',
             logger: marketplaceLogger,
           })
@@ -200,6 +327,7 @@ export function useAppState() {
         ? createCashuAuctionPolicy({
             mints: config.cashu.mints,
             storage: cashuStorage,
+            withdrawals: { createInvoice: createWithdrawalInvoice },
             appId: 'marketplace',
             logger: marketplaceLogger,
           })
@@ -257,7 +385,7 @@ export function useAppState() {
       })
       return runtime
     },
-    [config, locationProvider, marketplaceLogger],
+    [config, locationProvider, marketplaceLogger, notify],
   )
 
   const refreshAll = useCallback(async () => {
@@ -358,6 +486,10 @@ export function useAppState() {
     setMarketplaceLog([])
   }, [])
 
+  const dismissNotification = useCallback((id: number) => {
+    setNotifications(current => current.filter(notification => notification.id !== id))
+  }, [])
+
   return {
     state: {
       config,
@@ -366,6 +498,7 @@ export function useAppState() {
       marketplaceSession,
       refreshRevision,
       marketplaceLog,
+      notifications,
       loading,
       restoringSigner,
       status,
@@ -381,6 +514,8 @@ export function useAppState() {
       setError,
       setStatus,
       clearMarketplaceLog,
+      notify,
+      dismissNotification,
     },
   }
 }

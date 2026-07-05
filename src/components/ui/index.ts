@@ -1,5 +1,6 @@
 export { Alert, AlertAction, AlertDescription, AlertTitle } from './alert'
 export { Badge, badgeVariants } from './badge'
+export { Bubble, BubbleContent, BubbleGroup, BubbleReactions } from './bubble'
 export { Button, buttonVariants } from './button'
 export { Calendar, CalendarDayButton } from './calendar'
 export { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './card'
@@ -30,6 +31,26 @@ export {
 } from './field'
 export { Input } from './input'
 export { Label } from './label'
+export { Marker, MarkerContent, MarkerIcon, markerVariants } from './marker'
+export {
+  Message,
+  MessageAvatar,
+  MessageContent,
+  MessageFooter,
+  MessageGroup,
+  MessageHeader,
+} from './message'
+export {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+  useMessageScroller,
+  useMessageScrollerScrollable,
+  useMessageScrollerVisibility,
+} from './message-scroller'
 export {
   Popover,
   PopoverAnchor,

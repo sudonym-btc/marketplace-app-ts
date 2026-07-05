@@ -45,6 +45,14 @@ export type MarketplaceLogItem = {
   error?: unknown
 }
 
+export type AppNotification = {
+  id: number
+  at: string
+  level: 'info' | 'error'
+  title: string
+  message?: string
+}
+
 export type InboxItem = marketplace.MarketplaceInboxItem
 
 export type MyOrders = {

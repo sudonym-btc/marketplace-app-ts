@@ -9,8 +9,27 @@ import {
 } from '../nostr/inboxThreads'
 import type { NostrProfile } from '../nostr/profiles'
 import { OrderWidget } from './OrderWidget'
-import { ProfileChip } from './ProfileChip'
-import { Button, Card, Textarea, cn } from './ui'
+import { ProfileChip, profileLabel } from './ProfileChip'
+import {
+  Bubble,
+  BubbleContent,
+  Button,
+  Marker,
+  MarkerContent,
+  Message,
+  MessageAvatar,
+  MessageContent,
+  MessageFooter,
+  MessageHeader,
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+  Textarea,
+  cn,
+} from './ui'
 import { Field } from './widgets/FormField'
 import { ReservationOfferWidget } from './widgets/ReservationOfferWidget'
 
@@ -26,7 +45,33 @@ type Props = {
 function MessageBody({ message }: { message: ParsedInboxMessage }) {
   if (message.order) return <ReservationOfferWidget order={message.order} />
   if (message.item.error) return <p className="m-0 text-sm text-destructive">{message.item.error}</p>
-  return <p className="m-0 text-sm leading-6 text-muted-foreground">{message.body || 'No message body'}</p>
+  return <p className="m-0 text-sm leading-6 text-inherit">{message.body || 'No message body'}</p>
+}
+
+function ThreadAvatar({
+  pubkey,
+  profile,
+}: {
+  pubkey: string
+  profile?: NostrProfile
+}) {
+  const label = profileLabel(pubkey, profile)
+  return (
+    <MessageAvatar title={pubkey}>
+      {profile?.picture ? (
+        <img
+          alt=""
+          className="size-8 object-cover"
+          loading="lazy"
+          src={profile.picture}
+        />
+      ) : (
+        <span className="grid size-8 place-items-center text-xs font-semibold text-foreground">
+          {label.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+    </MessageAvatar>
+  )
 }
 
 function ThreadMessage({ message, profiles, currentPubkey }: {
@@ -35,18 +80,40 @@ function ThreadMessage({ message, profiles, currentPubkey }: {
   currentPubkey: string
 }) {
   const isMine = message.senderPubkey === currentPubkey
+  const align = isMine ? 'end' : 'start'
+  const profile = profiles.get(message.senderPubkey)
+  const bubbleVariant = message.item.error
+    ? 'destructive'
+    : message.order
+      ? 'outline'
+      : isMine
+        ? 'default'
+        : 'secondary'
   return (
-    <Card className={cn('grid max-w-3xl gap-3 p-4 shadow-none', isMine && 'justify-self-end')}>
-      <header className="flex items-center justify-between gap-4">
-        <ProfileChip pubkey={message.senderPubkey} profile={profiles.get(message.senderPubkey)} />
-        <span className="text-right text-xs text-muted-foreground">{new Date(message.createdAt * 1000).toLocaleString()}</span>
-      </header>
-      <div className="flex items-start justify-between gap-4">
-        <h3 className="m-0 text-base font-semibold text-foreground">{message.title}</h3>
-        {isMine && <span className="text-xs font-medium text-muted-foreground">Sent</span>}
-      </div>
-      <MessageBody message={message} />
-    </Card>
+    <Message align={align}>
+      <ThreadAvatar pubkey={message.senderPubkey} profile={profile} />
+      <MessageContent className="max-w-[min(44rem,100%)]">
+        <MessageHeader className={cn('gap-2', isMine && 'justify-end')}>
+          <span className="truncate">{profileLabel(message.senderPubkey, profile)}</span>
+          <span aria-hidden="true">·</span>
+          <span className="shrink-0">{new Date(message.createdAt * 1000).toLocaleString()}</span>
+        </MessageHeader>
+        <Bubble align={align} className={message.order ? 'max-w-[min(44rem,100%)]' : undefined} variant={bubbleVariant}>
+          <BubbleContent className={cn(message.order && 'w-full p-3')}>
+            <MessageBody message={message} />
+          </BubbleContent>
+        </Bubble>
+        <MessageFooter className={cn('gap-2', isMine && 'justify-end')}>
+          <span className="truncate">{message.title}</span>
+          {isMine && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>Sent</span>
+            </>
+          )}
+        </MessageFooter>
+      </MessageContent>
+    </Message>
   )
 }
 
@@ -110,20 +177,36 @@ export function ThreadView({
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto bg-muted/30 p-5">
-        {group.messages.length === 0 ? (
-          <p className="m-0 text-sm text-muted-foreground">No private messages in this order thread yet.</p>
-        ) : (
-          group.messages.map(message => (
-            <ThreadMessage
-              currentPubkey={currentPubkey}
-              key={message.messageId}
-              message={message}
-              profiles={profiles}
-            />
-          ))
-        )}
-      </div>
+      <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+        <MessageScroller className="flex-1 bg-muted/30">
+          <MessageScrollerViewport className="p-5">
+            <MessageScrollerContent className="gap-4">
+              {group.messages.length === 0 ? (
+                <MessageScrollerItem scrollAnchor>
+                  <Marker variant="separator">
+                    <MarkerContent>No private messages in this order thread yet.</MarkerContent>
+                  </Marker>
+                </MessageScrollerItem>
+              ) : (
+                group.messages.map(message => (
+                  <MessageScrollerItem
+                    key={message.messageId}
+                    messageId={message.messageId}
+                    scrollAnchor
+                  >
+                    <ThreadMessage
+                      currentPubkey={currentPubkey}
+                      message={message}
+                      profiles={profiles}
+                    />
+                  </MessageScrollerItem>
+                ))
+              )}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton />
+        </MessageScroller>
+      </MessageScrollerProvider>
 
       <form className="grid gap-3 border-t border-border bg-background px-5 py-4" onSubmit={submit}>
         <Field label="Reply">

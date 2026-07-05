@@ -23,7 +23,9 @@ function RootLayout() {
       status={state.status}
       loading={state.loading}
       error={state.error}
+      notifications={state.notifications}
       onLogout={actions.clearSession}
+      onDismissNotification={actions.dismissNotification}
     >
       <Outlet />
     </Shell>
