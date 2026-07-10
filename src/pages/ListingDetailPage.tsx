@@ -89,6 +89,17 @@ type ArbiterChoice = {
   disabledReason?: string
 }
 
+const invoicePaidProgressStages: readonly marketplaceSdk.MarketplacePaymentProgressStage[] = [
+  'external_payment_detected',
+  'escrow_finalizing',
+  'proof_publishing',
+]
+
+function paymentProgressHasPaidInvoice(state: marketplaceSdk.MarketplacePaymentProgressState): boolean {
+  const stage = state.data?.stage
+  return Boolean(stage && invoicePaidProgressStages.includes(stage))
+}
+
 type PaymentFlowStatus = 'idle' | 'working' | 'success' | 'error'
 
 const DEFAULT_CHECKOUT_PUBLIC = false
@@ -558,6 +569,7 @@ export function ListingDetailPage({
   const [auctionError, setAuctionError] = useState<string>()
   const [bidGroupsByAuction, setBidGroupsByAuction] = useState<Record<string, marketplaceSdk.ParsedAuctionBidGroup[]>>({})
   const [bidProfiles, setBidProfiles] = useState<Map<string, NostrProfile>>(() => new Map())
+  const [auctionArbiterProfiles, setAuctionArbiterProfiles] = useState<Map<string, NostrProfile>>(() => new Map())
   const [auctionCompletesByAuction, setAuctionCompletesByAuction] = useState<Record<string, marketplaceSdk.ParsedMarketplaceAuctionComplete>>({})
   const [auctionModalOpen, setAuctionModalOpen] = useState(false)
   const [auctionPublishing, setAuctionPublishing] = useState(false)
@@ -605,6 +617,10 @@ export function ListingDetailPage({
   )
   const isSeller = Boolean(listing && session?.pubkey === listing.event.pubkey)
   const availableAuctionCurrencies = useMemo(() => uniqueCurrencies(listing), [listing])
+  const auctionArbiterPubkeys = useMemo(
+    () => [...new Set(auctions.map(auction => auction.arbiterPubkey).filter(Boolean))],
+    [auctions],
+  )
   const publicBidPubkeys = useMemo(() => {
     const pubkeys = Object.values(bidGroupsByAuction)
       .flatMap(groups => groups.map(publicBidBuyerPubkey))
@@ -750,6 +766,27 @@ export function ListingDetailPage({
       closed = true
     }
   }, [reviewItems, session])
+
+  useEffect(() => {
+    if (!session || auctionArbiterPubkeys.length === 0) {
+      setAuctionArbiterProfiles(new Map())
+      return
+    }
+
+    let closed = false
+    void fetchProfiles(session, auctionArbiterPubkeys)
+      .then(profiles => {
+        if (!closed) setAuctionArbiterProfiles(profiles)
+      })
+      .catch(err => {
+        console.warn('[marketplace-app] unable to fetch auction arbiter profiles', { pubkeyCount: auctionArbiterPubkeys.length }, err)
+        if (!closed) setAuctionArbiterProfiles(new Map())
+      })
+
+    return () => {
+      closed = true
+    }
+  }, [auctionArbiterPubkeys, session])
 
   useEffect(() => {
     if (!session || publicBidPubkeys.length === 0) {
@@ -1414,6 +1451,9 @@ export function ListingDetailPage({
           setBidProgressMessage('Waiting for the external invoice payment to complete.')
         }
         if (state.type === 'payment_progress') {
+          if (paymentProgressHasPaidInvoice(state)) {
+            setBidInvoiceActive(false)
+          }
           setBidProgressMessage(state.status)
         }
         if (state.type === 'bid_published') {
@@ -1571,6 +1611,9 @@ export function ListingDetailPage({
           setCheckoutProgressMessage('Waiting for the external invoice payment to complete.')
         }
         if (paymentState.type === 'payment_progress') {
+          if (paymentProgressHasPaidInvoice(paymentState)) {
+            setCheckoutInvoiceActive(false)
+          }
           setCheckoutProgressMessage(paymentState.status)
         }
         if (paymentState.type === 'order_published') {
@@ -1684,6 +1727,7 @@ export function ListingDetailPage({
                   const highest = highestBidChainUnits(chains)
                   const status = auctionDisplayStatus(auction, complete)
                   const isLive = status === 'Live'
+                  const arbiterProfile = auctionArbiterProfiles.get(auction.arbiterPubkey)
                   return (
                     <Card className="grid gap-4 p-4" key={auction.auctionAnchor}>
                       <div className="flex min-w-0 items-center justify-between gap-4">
@@ -1700,10 +1744,20 @@ export function ListingDetailPage({
                         { label: 'Ends', value: <AuctionEndValue seconds={auction.endAt} /> },
                         { label: 'Starting bid', value: formatDenominatedUnits(safeUnits(auction.startingBid), auction.decimals, auction.currency) },
                         { label: 'Highest bid', value: formatDenominatedUnits(highest, auction.decimals, auction.currency) },
-                        { label: 'Arbiter', value: shortPubkey(auction.arbiterPubkey) },
                       ]} />
-                      <div className="flex min-w-0 flex-wrap items-center justify-between gap-4">
-                        {!isSeller && (
+                      <AdvancedAccordion
+                        title="Advanced"
+                        summary="Arbiter"
+                      >
+                        <Facts compact facts={[
+                          {
+                            label: 'Arbiter',
+                            value: <ProfileChip pubkey={auction.arbiterPubkey} profile={arbiterProfile} compact />,
+                          },
+                        ]} />
+                      </AdvancedAccordion>
+                      {!isSeller && (
+                        <div className="flex min-w-0 flex-wrap items-center justify-between gap-4">
                           <Button
                             data-testid="place-bid-button"
                             disabled={!isLive || bidPublishing}
@@ -1714,9 +1768,8 @@ export function ListingDetailPage({
                           >
                             Place bid
                           </Button>
-                        )}
-                        {isSeller && <span className="text-sm text-muted-foreground">Bids settle through {shortPubkey(auction.arbiterPubkey)}</span>}
-                      </div>
+                        </div>
+                      )}
                       {complete && (
                         <div className="grid gap-1 rounded-lg border bg-muted/50 p-3 text-sm leading-6">
                           <strong>{auctionCompleteLabel(complete)}</strong>
@@ -1774,8 +1827,7 @@ export function ListingDetailPage({
 	      <CodeHint
 	        code={[
 	          'const amount = marketplace.listings.price(listing, { start, end })',
-	          'const route = await marketplaceSession.orders.paymentRoute(listing, { amount })',
-	          'marketplaceSession.pay(listing, order, { route, identityProofPrivacy, paymentProofPrivacy })',
+	          'marketplaceSession.pay(listing, order)',
 	        ]}
         className="sticky top-7 rounded-xl"
       >
@@ -1993,7 +2045,7 @@ export function ListingDetailPage({
                 </DialogDescription>
               </DialogHeader>
               <CodeHint
-                code="marketplaceSession.pay(listing, order, { route, identityProofPrivacy, paymentProofPrivacy })"
+                code="marketplaceSession.pay(listing, order)"
                 className="grid gap-4 rounded-xl"
               >
                 <PaymentStatusPanel

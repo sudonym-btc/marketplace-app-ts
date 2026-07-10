@@ -7,12 +7,14 @@ import { AuctionCard } from '../components/widgets/AuctionCard'
 import { Page, PageHeader } from '../components/widgets/PageLayout'
 import { ScrollBatchStatus } from '../components/widgets/ScrollBatchStatus'
 import { useScrollBatch } from '../hooks/useScrollBatch'
-import type { AuctionListingResolution, MarketplaceSession } from '../types'
+import { fetchProfiles, type NostrProfile } from '../nostr/profiles'
+import type { AppSession, AuctionListingResolution, MarketplaceSession } from '../types'
 
 type Props = {
   marketplace: ReturnType<typeof marketplaceSdk.bind>
   rows: AuctionListingResolution[]
   marketplaceSession?: MarketplaceSession
+  session?: AppSession
   loading?: boolean
   error?: string
 }
@@ -26,13 +28,18 @@ const auctionSnapshots = await Promise.all(auctions.map(async auction => {
   return snapshots[auction.auctionAnchor]
 }))`
 
-export function AuctionsPage({ marketplace, marketplaceSession, rows, loading = false, error }: Props) {
+export function AuctionsPage({ marketplace, marketplaceSession, rows, session, loading = false, error }: Props) {
   const { hasMore, loadNextBatch, sentinelRef, visibleCount } = useScrollBatch(rows.length, { batchSize: 4 })
-  const visibleRows = rows.slice(0, visibleCount)
+  const visibleRows = useMemo(() => rows.slice(0, visibleCount), [rows, visibleCount])
   const [liveSnapshots, setLiveSnapshots] = useState<Record<string, marketplaceSdk.MarketplaceAuctionScopeSnapshot>>({})
   const [eoseByAuction, setEoseByAuction] = useState<Record<string, boolean>>({})
+  const [arbiterProfiles, setArbiterProfiles] = useState<Map<string, NostrProfile>>(() => new Map())
   const visibleAnchors = useMemo(
     () => visibleRows.map(row => row.auction.auctionAnchor).join('|'),
+    [visibleRows],
+  )
+  const visibleArbiterPubkeys = useMemo(
+    () => [...new Set(visibleRows.map(row => row.auction.arbiterPubkey).filter(Boolean))],
     [visibleRows],
   )
 
@@ -46,6 +53,27 @@ export function AuctionsPage({ marketplace, marketplaceSession, rows, loading = 
     ))
     setEoseByAuction({})
   }, [rows])
+
+  useEffect(() => {
+    if (!session || visibleArbiterPubkeys.length === 0) {
+      setArbiterProfiles(new Map())
+      return
+    }
+
+    let closed = false
+    void fetchProfiles(session, visibleArbiterPubkeys)
+      .then(profiles => {
+        if (!closed) setArbiterProfiles(profiles)
+      })
+      .catch(err => {
+        console.warn('[marketplace-app] unable to fetch auction arbiter profiles', { pubkeyCount: visibleArbiterPubkeys.length }, err)
+        if (!closed) setArbiterProfiles(new Map())
+      })
+
+    return () => {
+      closed = true
+    }
+  }, [session, visibleArbiterPubkeys])
 
   useEffect(() => {
     const closers = visibleRows.map(row => {
@@ -99,6 +127,7 @@ export function AuctionsPage({ marketplace, marketplaceSession, rows, loading = 
                 const snapshot = liveSnapshots[row.auction.auctionAnchor] ?? row.snapshot
                 return (
                   <AuctionCard
+                    arbiterProfile={arbiterProfiles.get(row.auction.arbiterPubkey)}
                     backfillComplete={Boolean(eoseByAuction[row.auction.auctionAnchor])}
                     key={row.auction.auctionAnchor}
                     marketplaceSession={marketplaceSession}

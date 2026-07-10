@@ -43,6 +43,7 @@ function AuctionsRoute() {
       marketplace={marketplaceClient}
       marketplaceSession={state.marketplaceSession}
       rows={rows.data}
+      session={state.session}
     />
   )
 }

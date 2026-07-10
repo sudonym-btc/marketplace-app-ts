@@ -4,14 +4,18 @@ import type * as marketplaceSdk from 'nostr-tools/marketplace'
 
 import { useMarketplaceValue } from '../../hooks/useMarketplaceValue'
 import { isWinningBidChain } from '../../nostr/auctionBidChains'
+import type { NostrProfile } from '../../nostr/profiles'
 import type { AuctionListingResolution, MarketplaceSession } from '../../types'
 import { formatDenominatedValue, formatPriceAmount } from '../../utils/amountDisplay'
 import { formatDateTime } from '../../utils/timeDisplay'
+import { ProfileChip } from '../ProfileChip'
 import { Badge, Button, Card } from '../ui'
+import { AdvancedAccordion } from './AdvancedAccordion'
 import { Facts } from './FactList'
 import { AuctionEndValue } from './TimeText'
 
 type AuctionCardProps = {
+  arbiterProfile?: NostrProfile
   backfillComplete?: boolean
   marketplaceSession?: MarketplaceSession
   row: AuctionListingResolution
@@ -21,10 +25,6 @@ type AuctionCardProps = {
 type AuctionViewerStatus = {
   label: string
   variant: 'default' | 'secondary' | 'outline'
-}
-
-function shortPubkey(pubkey: string): string {
-  return `${pubkey.slice(0, 8)}...${pubkey.slice(-6)}`
 }
 
 function auctionStatus(auction: AuctionListingResolution['auction']): string {
@@ -85,7 +85,7 @@ function auctionViewerStatus(
   return { label: 'Outbid', variant: 'secondary' }
 }
 
-export function AuctionCard({ backfillComplete, marketplaceSession, row, snapshot }: AuctionCardProps) {
+export function AuctionCard({ arbiterProfile, backfillComplete, marketplaceSession, row, snapshot }: AuctionCardProps) {
   const nextTradeIndex = useMarketplaceValue(marketplaceSession?.nextTradeIndex)
   const { auction, listing } = row
   const image = listing?.images[0]?.url
@@ -150,9 +150,16 @@ export function AuctionCard({ backfillComplete, marketplaceSession, row, snapsho
               { label: 'Starts', value: formatDateTime(auction.startAt) },
               { label: 'Ends', value: <AuctionEndValue seconds={auction.endAt} /> },
               { label: 'Backfill', value: backfillComplete ? 'EOSE' : 'Syncing' },
-              { label: 'Arbiter', value: shortPubkey(auction.arbiterPubkey) },
             ]}
           />
+          <AdvancedAccordion title="Advanced" summary="Arbiter">
+            <Facts compact facts={[
+              {
+                label: 'Arbiter',
+                value: <ProfileChip pubkey={auction.arbiterPubkey} profile={arbiterProfile} compact />,
+              },
+            ]} />
+          </AdvancedAccordion>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-sm text-muted-foreground">
               {listing ? 'Open classified to bid' : row.error ?? 'Listing event not loaded'}
