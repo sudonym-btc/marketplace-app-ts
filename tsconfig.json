@@ -11,6 +11,12 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "types": ["node", "bun-types"],
+    "typeRoots": [
+      "./node_modules/@types",
+      "../nostr-tools/node_modules/@types",
+      "../nostr-tools/node_modules"
+    ],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]

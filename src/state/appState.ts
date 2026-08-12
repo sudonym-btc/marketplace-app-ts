@@ -10,6 +10,7 @@ import { createEvmChainConfigs } from '../evm/config'
 import { LocalOperationStore } from '../evm/operationStore'
 import { createLnurlPayInvoice } from '../lightning/lnurl'
 import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreStoredSession } from '../nostr/session'
+import { LocalSettlementJournal } from '../nostr/settlementJournal'
 import { fetchProfiles } from '../nostr/profiles'
 import type { AppNotification, AppSession, LoadedMarketplaceSession, MarketplaceClient, MarketplaceLogItem, SessionRestoreError } from '../types'
 import { createAppLocationProvider } from '../nostr/locationProvider'
@@ -279,6 +280,16 @@ export function useAppState() {
       const orderDrivers: marketplace.MarketplaceOrderDriver[] = []
       const auctionDrivers: marketplace.MarketplaceAuctionDriver[] = []
       const evmChains = createEvmChainConfigs(config)
+      if (config.evm.enabled && config.evm.boltzSwapUnavailableReason) {
+        console.warn('[marketplace-app] EVM swap routes disabled', {
+          reason: config.evm.boltzSwapUnavailableReason,
+        })
+        notify({
+          level: 'info',
+          title: 'Lightning-to-EVM swaps unavailable',
+          message: config.evm.boltzSwapUnavailableReason,
+        })
+      }
       const cashuStorage = new LocalCashuEscrowStore()
       const createWithdrawalInvoice = async (amountSats: number, description?: string): Promise<string> => {
         try {
@@ -354,6 +365,7 @@ export function useAppState() {
         pubkey: nextSession.pubkey,
         orderDrivers,
         auctionDrivers,
+        settlementJournal: new LocalSettlementJournal(nextSession.pubkey),
         autoTrustArbiter: config.autoTrustArbiterPubkeys,
         publish: event => pub.publish(event),
       })

@@ -8,14 +8,21 @@ import { BunkerSigner, parseBunkerInput, toBunkerURL, type BunkerPointer } from 
 import type { AppSigner } from '../types'
 import { bytesToHex, hexToBytes } from '../utils/hex'
 
-const clientKeyStorageKey = 'marketplace-app:nip46-client-key'
-const signerStorageKey = 'marketplace-app:signer'
+const clientKeyStorageKey = 'marketplace-app:nip46-client-key:v2'
+const signerStorageKey = 'marketplace-app:signer:v2'
+const legacyClientKeyStorageKey = 'marketplace-app:nip46-client-key'
+const legacySignerStorageKey = 'marketplace-app:signer'
 const legacyBunkerStorageKey = 'marketplace-app:bunker'
 const legacyPubkeyStorageKey = 'marketplace-app:pubkey'
+const sessionTtlMs = 8 * 60 * 60 * 1000
 
-type StoredSigner =
-  | { kind: 'bunker'; bunker: string; pubkey?: string }
-  | { kind: 'nsec'; nsec: string; pubkey?: string }
+type StoredSigner = { kind: 'bunker'; bunker: string; pubkey?: string }
+
+type SessionRecord<T> = {
+  version: 2
+  expiresAt: number
+  value: T
+}
 
 class StoredNsecSigner implements AppSigner {
   constructor(private readonly secretKey: Uint8Array) {}
@@ -43,32 +50,50 @@ function parseNsec(nsec: string): Uint8Array {
   return decoded.data
 }
 
-function readStoredSigner(): StoredSigner | null {
-  const stored = localStorage.getItem(signerStorageKey)
+function purgeLegacyPersistentSecrets(): void {
+  // Older releases persisted nsec, bunker authorization secrets, and the
+  // NIP-46 client private key indefinitely. Never attempt to restore them.
+  localStorage.removeItem(legacySignerStorageKey)
+  localStorage.removeItem(legacyBunkerStorageKey)
+  localStorage.removeItem(legacyPubkeyStorageKey)
+  localStorage.removeItem(legacyClientKeyStorageKey)
+}
+
+function readSessionRecord<T>(key: string): T | null {
+  const stored = sessionStorage.getItem(key)
   if (stored) {
     try {
-      const parsed = JSON.parse(stored) as StoredSigner
-      if (parsed.kind === 'bunker' && parsed.bunker) return parsed
-      if (parsed.kind === 'nsec' && parsed.nsec) return parsed
+      const parsed = JSON.parse(stored) as SessionRecord<T>
+      if (parsed.version !== 2 || !Number.isSafeInteger(parsed.expiresAt) || parsed.expiresAt <= Date.now()) {
+        sessionStorage.removeItem(key)
+        return null
+      }
+      return parsed.value
     } catch (err) {
-      console.warn('[marketplace-app] stored signer record could not be parsed', err)
+      sessionStorage.removeItem(key)
+      console.warn('[marketplace-app] session credential record could not be parsed', err)
     }
   }
+  return null
+}
 
-  const legacyBunker = localStorage.getItem(legacyBunkerStorageKey)
-  if (!legacyBunker) return null
-  return {
-    kind: 'bunker',
-    bunker: legacyBunker,
-    pubkey: localStorage.getItem(legacyPubkeyStorageKey) ?? undefined,
-  }
+function writeSessionRecord<T>(key: string, value: T): void {
+  const record: SessionRecord<T> = { version: 2, expiresAt: Date.now() + sessionTtlMs, value }
+  sessionStorage.setItem(key, JSON.stringify(record))
+}
+
+function readStoredSigner(): StoredSigner | null {
+  purgeLegacyPersistentSecrets()
+  const parsed = readSessionRecord<StoredSigner>(signerStorageKey)
+  return parsed?.kind === 'bunker' && parsed.bunker ? parsed : null
 }
 
 export function getOrCreateClientSecretKey(): Uint8Array {
-  const stored = localStorage.getItem(clientKeyStorageKey)
+  purgeLegacyPersistentSecrets()
+  const stored = readSessionRecord<string>(clientKeyStorageKey)
   if (stored) return hexToBytes(stored)
   const secretKey = generateSecretKey()
-  localStorage.setItem(clientKeyStorageKey, bytesToHex(secretKey))
+  writeSessionRecord(clientKeyStorageKey, bytesToHex(secretKey))
   return secretKey
 }
 
@@ -77,19 +102,18 @@ export async function signerFromLocalSecret(nsec: string): Promise<{ pubkey: str
   return { pubkey: await signer.getPublicKey(), signer }
 }
 
-export function storeLocalSecretCredential(nsec: string, pubkey: string): void {
-  const stored: StoredSigner = { kind: 'nsec', nsec: nsec.trim(), pubkey }
-  localStorage.setItem(signerStorageKey, JSON.stringify(stored))
-  localStorage.removeItem(legacyBunkerStorageKey)
-  localStorage.setItem(legacyPubkeyStorageKey, pubkey)
+export function storeLocalSecretCredential(_nsec: string, _pubkey: string): void {
+  // Local nsec signers live only in the in-memory AppSession. A reload requires
+  // another explicit login; no plaintext private key is written to web storage.
+  purgeLegacyPersistentSecrets()
+  sessionStorage.removeItem(signerStorageKey)
 }
 
 export function storeBunkerCredential(pointer: BunkerPointer, pubkey: string): void {
   const bunker = toBunkerURL(pointer)
   const stored: StoredSigner = { kind: 'bunker', bunker, pubkey }
-  localStorage.setItem(signerStorageKey, JSON.stringify(stored))
-  localStorage.setItem(legacyBunkerStorageKey, bunker)
-  localStorage.setItem(legacyPubkeyStorageKey, pubkey)
+  purgeLegacyPersistentSecrets()
+  writeSessionRecord(signerStorageKey, stored)
 }
 
 export async function restoreStoredSigner(
@@ -99,8 +123,6 @@ export async function restoreStoredSigner(
 ): Promise<{ pubkey: string; signer: AppSigner } | null> {
   const stored = readStoredSigner()
   if (!stored) return null
-
-  if (stored.kind === 'nsec') return signerFromLocalSecret(stored.nsec)
 
   const pointer = await parseBunkerInput(stored.bunker)
   if (!pointer) {
@@ -115,8 +137,7 @@ export async function restoreStoredSigner(
 }
 
 export function clearStoredSigner(): void {
-  localStorage.removeItem(signerStorageKey)
-  localStorage.removeItem(legacyBunkerStorageKey)
-  localStorage.removeItem(legacyPubkeyStorageKey)
-  localStorage.removeItem(clientKeyStorageKey)
+  purgeLegacyPersistentSecrets()
+  sessionStorage.removeItem(signerStorageKey)
+  sessionStorage.removeItem(clientKeyStorageKey)
 }

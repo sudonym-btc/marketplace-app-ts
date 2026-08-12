@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "types": ["node", "bun-types"],
+    "typeRoots": [
+      "./node_modules/@types",
+      "../nostr-tools/node_modules/@types",
+      "../nostr-tools/node_modules"
+    ]
+  },
+  "include": ["arbiter.ts"]
+}

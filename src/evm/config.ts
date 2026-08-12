@@ -4,6 +4,15 @@ import type { AppConfig } from '../config/appConfig'
 export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainConfig[] {
   if (!config.evm.enabled) return []
 
+  // A provider URL alone is not a capability. Boltz is enabled only when the
+  // deployment manifest also supplied locally trusted contract/runtime roots.
+  const boltz = config.evm.boltzApiUrl && config.evm.boltzTrust
+    ? {
+        apiUrl: config.evm.boltzApiUrl,
+        trustByChainId: { [config.evm.chainId]: config.evm.boltzTrust },
+      }
+    : undefined
+
   return [
     {
       id: `evm-${config.evm.chainId}`,
@@ -26,7 +35,7 @@ export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainCon
         ...(asset.boltzCurrency ? { boltzCurrency: asset.boltzCurrency } : {}),
         ...(asset.boltzRouteVia ? { boltzRouteVia: asset.boltzRouteVia } : {}),
       })),
-      ...(config.evm.boltzApiUrl ? { boltz: { apiUrl: config.evm.boltzApiUrl } } : {}),
+      ...(boltz ? { boltz } : {}),
       accountAbstraction: {
         entryPointAddress: config.evm.entryPointAddress,
         entryPointVersion: '0.7',

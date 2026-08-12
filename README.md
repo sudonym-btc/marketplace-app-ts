@@ -72,10 +72,18 @@ Development mode loads `.env.development`, which points at the standalone NMDK
 localhost ports. `npm run up` at the NMDK root refreshes `.env.local` from the
 generated stack configs.
 
+Boltz is not enabled from an API URL alone. `VITE_EVM_BOLTZ_TRUST` must contain
+the deployment-pinned ERC20Swap and optional DEX call-target addresses, runtime
+bytecode hashes, selectors, and semantic decoder IDs. The root stack derives
+this JSON from bytecode actually deployed by the local EVM stack. If the value
+is missing or invalid, the app keeps direct EVM routes available, disables all
+Lightning-to-EVM swap fallbacks before contacting Boltz, and reports why.
+
 ## Compile checks
 
 ```sh
 npm run check
+npm test
 npm run build
 ```
 

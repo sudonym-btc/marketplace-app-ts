@@ -5,22 +5,45 @@ import type {
   CashuEscrowStorage,
 } from '@sudonym-btc/marketplace-cashu'
 
-const storageKey = 'marketplace-app:cashu-operations'
+const storageKey = 'marketplace-app:cashu-operations:v2'
+const legacyStorageKey = 'marketplace-app:cashu-operations'
+const storageVersion = 2
+type StoredOperations = {
+  version: 2
+  records: CashuEscrowOperation[]
+}
+
+export function retainedCashuRecords(
+  records: CashuEscrowOperation[],
+  _now = Math.floor(Date.now() / 1000),
+): CashuEscrowOperation[] {
+  // Terminal records are compact idempotency tombstones. Aging them out can
+  // turn a late retry into a second financial action, so cleanup must be an
+  // explicit protocol-aware operation rather than a wall-clock side effect.
+  return records
+}
 
 function parseRecords(): CashuEscrowOperation[] {
+  // The legacy schema could contain bearer proofs. Delete it rather than
+  // attempting a value-preserving migration.
+  localStorage.removeItem(legacyStorageKey)
   const raw = localStorage.getItem(storageKey)
   if (!raw) return []
   try {
-    return JSON.parse(raw) as CashuEscrowOperation[]
+    const stored = JSON.parse(raw) as StoredOperations
+    if (stored.version !== storageVersion || !Array.isArray(stored.records)) throw new Error('unsupported storage version')
+    return retainedCashuRecords(stored.records)
   } catch (err) {
     console.warn('[marketplace-app] unable to parse stored Cashu operations', err)
+    localStorage.removeItem(storageKey)
     return []
   }
 }
 
 function writeRecords(records: CashuEscrowOperation[]): void {
   console.debug('[marketplace-app] writing Cashu operation records', { count: records.length })
-  localStorage.setItem(storageKey, JSON.stringify(records))
+  const stored: StoredOperations = { version: storageVersion, records: retainedCashuRecords(records) }
+  localStorage.setItem(storageKey, JSON.stringify(stored))
 }
 
 function statusMatches(record: CashuEscrowOperation, status?: CashuEscrowOperationStatus | CashuEscrowOperationStatus[]): boolean {
@@ -59,6 +82,13 @@ export class LocalCashuEscrowStore implements CashuEscrowStorage {
     const next = records.filter(item => item.id !== record.id)
     next.push(record)
     writeRecords(next)
+  }
+
+  async create(record: CashuEscrowOperation): Promise<boolean> {
+    const records = parseRecords()
+    if (records.some(item => item.id === record.id)) return false
+    writeRecords([...records, record])
+    return true
   }
 
   async list(query: CashuEscrowOperationQuery = {}): Promise<CashuEscrowOperation[]> {

@@ -5,8 +5,24 @@ import type {
   EvmOperationStore,
 } from '@sudonym-btc/marketplace-evm'
 
-const storageKey = 'marketplace-app:evm-operations'
+const storageKey = 'marketplace-app:evm-operations:v2'
+const legacyStorageKey = 'marketplace-app:evm-operations'
+const storageVersion = 2
 const bigintMarker = '__marketplaceAppBigInt'
+
+type StoredOperations = {
+  version: 2
+  records: EvmOperationRecord[]
+}
+
+export function retainedEvmRecords(
+  records: EvmOperationRecord[],
+  _now = Math.floor(Date.now() / 1000),
+): EvmOperationRecord[] {
+  // Keep compact tombstones until an explicit, protocol-aware cleanup. A
+  // time-based deletion would weaken operation-id replay protection.
+  return records
+}
 
 function encodeBigInt(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? { [bigintMarker]: value.toString() } : value
@@ -26,18 +42,35 @@ function decodeBigInt(_key: string, value: unknown): unknown {
 
 function parseRecords(): EvmOperationRecord[] {
   const raw = localStorage.getItem(storageKey)
-  if (!raw) return []
+  if (!raw) {
+    const legacy = localStorage.getItem(legacyStorageKey)
+    if (!legacy) return []
+    try {
+      const records = retainedEvmRecords(JSON.parse(legacy, decodeBigInt) as EvmOperationRecord[])
+      localStorage.removeItem(legacyStorageKey)
+      writeRecords(records)
+      return records
+    } catch (err) {
+      localStorage.removeItem(legacyStorageKey)
+      console.warn('[marketplace-app] unable to migrate stored EVM operations', err)
+      return []
+    }
+  }
   try {
-    return JSON.parse(raw, decodeBigInt) as EvmOperationRecord[]
+    const stored = JSON.parse(raw, decodeBigInt) as StoredOperations
+    if (stored.version !== storageVersion || !Array.isArray(stored.records)) throw new Error('unsupported storage version')
+    return retainedEvmRecords(stored.records)
   } catch (err) {
     console.warn('[marketplace-app] unable to parse stored EVM operations', err)
+    localStorage.removeItem(storageKey)
     return []
   }
 }
 
 function writeRecords(records: EvmOperationRecord[]): void {
   console.debug('[marketplace-app] writing EVM operation records', { count: records.length })
-  localStorage.setItem(storageKey, JSON.stringify(records, encodeBigInt))
+  const stored: StoredOperations = { version: storageVersion, records: retainedEvmRecords(records) }
+  localStorage.setItem(storageKey, JSON.stringify(stored, encodeBigInt))
 }
 
 function statusMatches(record: EvmOperationRecord, status?: EvmOperationStatus | EvmOperationStatus[]): boolean {
@@ -75,6 +108,13 @@ export class LocalOperationStore implements EvmOperationStore {
     const next = records.filter(item => item.id !== record.id)
     next.push(record)
     writeRecords(next)
+  }
+
+  async putIfAbsent(record: EvmOperationRecord): Promise<boolean> {
+    const records = parseRecords()
+    if (records.some(item => item.id === record.id)) return false
+    writeRecords([...records, record])
+    return true
   }
 
   async list(query: EvmOperationQuery = {}): Promise<EvmOperationRecord[]> {

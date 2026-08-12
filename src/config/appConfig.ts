@@ -1,3 +1,7 @@
+import type { EvmBoltzChainTrust } from '@sudonym-btc/marketplace-evm'
+
+import { parseEvmBoltzTrust } from '../evm/boltzTrust'
+
 type Address = `0x${string}`
 
 export type AppAssetConfig = {
@@ -22,6 +26,10 @@ export type EvmAppConfig = {
   /** Optional base URL for a human-facing block explorer for this EVM chain. */
   blockExplorerUrl?: string
   boltzApiUrl?: string
+  /** Deployment-pinned roots required to enable any Boltz provider route. */
+  boltzTrust?: EvmBoltzChainTrust
+  /** Human-readable reason swaps are unavailable while direct EVM remains enabled. */
+  boltzSwapUnavailableReason?: string
   entryPointAddress: Address
   accountFactoryAddress: Address
   bundlerUrl: string
@@ -40,6 +48,7 @@ export type CashuMintConfig = {
   denomination: string
   decimals: number
   policyHash?: string
+  auctionKeysetPolicies?: Array<{ keysetId: string; activeUntil: number }>
 }
 
 export type CashuAppConfig = {
@@ -180,6 +189,9 @@ function parseCsv(name: string): string[] {
 }
 
 function parseDemoAccounts(): DemoAccountConfig[] {
+  const host = browserHost()
+  const isDevelopmentHost = Boolean(host && (isLoopbackHost(host) || developmentDomainForHost(host)))
+  if (!isDevelopmentHost || env('VITE_ENABLE_DEMO_ACCOUNTS') === 'false') return []
   const raw = env('VITE_DEMO_ACCOUNTS')
   if (!raw) return defaultDemoAccounts
   try {
@@ -233,6 +245,18 @@ export function loadAppConfig(): AppConfig {
   const rpcUrl = env('VITE_EVM_RPC_URL') ?? ''
   const chainId = Number.parseInt(env('VITE_EVM_CHAIN_ID') ?? '0', 10)
   const evmEnabled = Boolean(rpcUrl && Number.isSafeInteger(chainId) && chainId > 0)
+  const boltzApiUrl = browserReachableUrl(env('VITE_EVM_BOLTZ_API_URL'))
+  const boltzCurrency = env('VITE_EVM_BOLTZ_CURRENCY')
+  const boltzTrust = parseEvmBoltzTrust(env('VITE_EVM_BOLTZ_TRUST'))
+  const evmAssets = parseAssets()
+  const swapsConfigured = Boolean(boltzCurrency || evmAssets.some(asset => asset.boltzCurrency || asset.boltzRouteVia))
+  const boltzSwapUnavailableReason = swapsConfigured
+    ? !boltzApiUrl
+      ? 'Lightning-to-EVM swaps are disabled because VITE_EVM_BOLTZ_API_URL is not configured'
+      : boltzTrust.error
+        ? `Lightning-to-EVM swaps are disabled: ${boltzTrust.error}`
+        : undefined
+    : undefined
   const cashuMints = parseCashuMints()
   return {
     relays: parseRelays(),
@@ -245,10 +269,12 @@ export function loadAppConfig(): AppConfig {
       enabled: evmEnabled,
       chainId,
       chainName: env('VITE_EVM_CHAIN_NAME') ?? `EVM ${chainId || ''}`.trim(),
-      boltzCurrency: env('VITE_EVM_BOLTZ_CURRENCY'),
+      boltzCurrency,
       rpcUrl: browserReachableUrl(rpcUrl) ?? rpcUrl,
       blockExplorerUrl: browserReachableUrl(env('VITE_EVM_BLOCK_EXPLORER_URL')),
-      boltzApiUrl: browserReachableUrl(env('VITE_EVM_BOLTZ_API_URL')),
+      boltzApiUrl,
+      ...(boltzTrust.trust ? { boltzTrust: boltzTrust.trust } : {}),
+      ...(boltzSwapUnavailableReason ? { boltzSwapUnavailableReason } : {}),
       entryPointAddress: envAddress('VITE_EVM_ENTRY_POINT_ADDRESS'),
       accountFactoryAddress: envAddress('VITE_EVM_ACCOUNT_FACTORY_ADDRESS'),
       bundlerUrl: browserReachableUrl(env('VITE_EVM_BUNDLER_URL')) ?? '',
@@ -258,7 +284,7 @@ export function loadAppConfig(): AppConfig {
       multiEscrowBytecodeHash: env('VITE_EVM_MULTI_ESCROW_BYTECODE_HASH') as `0x${string}` | undefined,
       arbiterAddress: envAddress('VITE_EVM_ARBITER_ADDRESS'),
       arbiterNostrPubkey: env('VITE_EVM_ARBITER_NOSTR_PUBKEY'),
-      assets: parseAssets(),
+      assets: evmAssets,
     },
     cashu: {
       enabled: cashuMints.length > 0,

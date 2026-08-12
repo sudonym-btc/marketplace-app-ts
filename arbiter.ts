@@ -1,6 +1,16 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -30,6 +40,7 @@ import { SimplePool } from 'nostr-tools/pool'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 
 import { createEvmChainConfigs } from './src/evm/config'
+import { parseEvmBoltzTrust } from './src/evm/boltzTrust'
 import type { AppConfig } from './src/config/appConfig'
 
 type Address = `0x${string}`
@@ -92,23 +103,88 @@ function evmOperationMatches(record: EvmOperationRecord, query: EvmOperationQuer
   )
 }
 
+const bigintMarker = '__marketplaceArbiterBigInt'
+
+function encodeState(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? { [bigintMarker]: value.toString() } : value
+}
+
+function decodeState(_key: string, value: unknown): unknown {
+  if (
+    value && typeof value === 'object' && Object.keys(value).length === 1 &&
+    typeof (value as Record<string, unknown>)[bigintMarker] === 'string'
+  ) {
+    return BigInt((value as Record<string, string>)[bigintMarker])
+  }
+  return value
+}
+
+function readStateRecords<T>(path: string): T[] {
+  if (!existsSync(path)) return []
+  const parsed = JSON.parse(readFileSync(path, 'utf8'), decodeState) as { version?: unknown; records?: unknown }
+  if (parsed.version !== 1 || !Array.isArray(parsed.records)) throw new Error(`Invalid arbiter state file: ${path}`)
+  return parsed.records as T[]
+}
+
+function writeStateRecords<T>(path: string, records: T[]): void {
+  const directory = dirname(path)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const temporary = `${path}.tmp`
+  const payload = JSON.stringify({ version: 1, records }, encodeState)
+  const fd = openSync(temporary, 'w', 0o600)
+  try {
+    writeFileSync(fd, payload)
+    fsyncSync(fd)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch {}
+    throw error
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(temporary, path)
+  const directoryFd = openSync(directory, 'r')
+  try {
+    fsyncSync(directoryFd)
+  } finally {
+    closeSync(directoryFd)
+  }
+}
+
 class ArbiterEvmOperationStore implements EvmOperationStore {
   private readonly records = new Map<string, EvmOperationRecord>()
 
+  constructor(private readonly path: string) {
+    for (const record of readStateRecords<EvmOperationRecord>(path)) this.records.set(record.id, record)
+  }
+
+  private persist(): void {
+    writeStateRecords(this.path, [...this.records.values()])
+  }
+
   async get(id: string): Promise<EvmOperationRecord | null> {
-    return this.records.get(id) ?? null
+    const record = this.records.get(id)
+    return record ? structuredClone(record) : null
   }
 
   async put(record: EvmOperationRecord): Promise<void> {
-    this.records.set(record.id, record)
+    this.records.set(record.id, structuredClone(record))
+    this.persist()
+  }
+
+  async putIfAbsent(record: EvmOperationRecord): Promise<boolean> {
+    if (this.records.has(record.id)) return false
+    this.records.set(record.id, structuredClone(record))
+    this.persist()
+    return true
   }
 
   async list(query: EvmOperationQuery = {}): Promise<EvmOperationRecord[]> {
-    return [...this.records.values()].filter(record => evmOperationMatches(record, query))
+    return [...this.records.values()].filter(record => evmOperationMatches(record, query)).map(record => structuredClone(record))
   }
 
   async delete(id: string): Promise<void> {
     this.records.delete(id)
+    this.persist()
   }
 }
 
@@ -123,12 +199,29 @@ function cashuStatusMatches(
 class ArbiterCashuEscrowStore implements CashuEscrowStorage {
   private readonly records = new Map<string, CashuEscrowOperation>()
 
+  constructor(private readonly path: string) {
+    for (const record of readStateRecords<CashuEscrowOperation>(path)) this.records.set(record.id, record)
+  }
+
+  private persist(): void {
+    writeStateRecords(this.path, [...this.records.values()])
+  }
+
   async get(id: string): Promise<CashuEscrowOperation | null> {
-    return this.records.get(id) ?? null
+    const record = this.records.get(id)
+    return record ? structuredClone(record) : null
   }
 
   async put(record: CashuEscrowOperation): Promise<void> {
     this.records.set(record.id, structuredClone(record))
+    this.persist()
+  }
+
+  async create(record: CashuEscrowOperation): Promise<boolean> {
+    if (this.records.has(record.id)) return false
+    this.records.set(record.id, structuredClone(record))
+    this.persist()
+    return true
   }
 
   async list(query: CashuEscrowOperationQuery = {}): Promise<CashuEscrowOperation[]> {
@@ -143,6 +236,27 @@ class ArbiterCashuEscrowStore implements CashuEscrowStorage {
 
   async delete(id: string): Promise<void> {
     this.records.delete(id)
+    this.persist()
+  }
+}
+
+class ArbiterSettlementJournal implements marketplace.MarketplaceSettlementJournal {
+  private readonly records = new Map<string, marketplace.MarketplaceSettlementJournalRecord>()
+
+  constructor(private readonly path: string) {
+    for (const record of readStateRecords<marketplace.MarketplaceSettlementJournalRecord>(path)) {
+      this.records.set(record.id, record)
+    }
+  }
+
+  async get(id: string): Promise<marketplace.MarketplaceSettlementJournalRecord | null> {
+    const record = this.records.get(id)
+    return record ? structuredClone(record) : null
+  }
+
+  async put(record: marketplace.MarketplaceSettlementJournalRecord): Promise<void> {
+    this.records.set(record.id, structuredClone(record))
+    writeStateRecords(this.path, [...this.records.values()])
   }
 }
 
@@ -387,15 +501,33 @@ function appConfigFromEnv(env: Record<string, string>, relays: string[]): AppCon
   const chainId = Number.parseInt(envValue(env, 'VITE_EVM_CHAIN_ID') ?? '0', 10)
   const rpcUrl = envValue(env, 'VITE_EVM_RPC_URL') ?? ''
   const enabled = Boolean(rpcUrl && Number.isSafeInteger(chainId) && chainId > 0)
+  const boltzApiUrl = envValue(env, 'VITE_EVM_BOLTZ_API_URL')
+  const boltzCurrency = envValue(env, 'VITE_EVM_BOLTZ_CURRENCY')
+  const boltzTrust = parseEvmBoltzTrust(envValue(env, 'VITE_EVM_BOLTZ_TRUST'))
+  const assets = parseJsonArray<AppConfig['evm']['assets'][number]>(envValue(env, 'VITE_EVM_ASSETS'), [])
+  const swapsConfigured = Boolean(boltzCurrency || assets.some(asset => asset.boltzCurrency || asset.boltzRouteVia))
+  const boltzSwapUnavailableReason = swapsConfigured
+    ? !boltzApiUrl
+      ? 'Lightning-to-EVM swaps are disabled because VITE_EVM_BOLTZ_API_URL is not configured'
+      : boltzTrust.error
+        ? `Lightning-to-EVM swaps are disabled: ${boltzTrust.error}`
+        : undefined
+    : undefined
   return {
     relays,
+    nip46Relays: relays,
+    demoAccounts: [],
+    autoTrustArbiterPubkeys: [],
     evm: {
       enabled,
       chainId,
       chainName: envValue(env, 'VITE_EVM_CHAIN_NAME') ?? `EVM ${chainId || ''}`.trim(),
+      boltzCurrency,
       rpcUrl,
       blockExplorerUrl: envValue(env, 'VITE_EVM_BLOCK_EXPLORER_URL'),
-      boltzApiUrl: envValue(env, 'VITE_EVM_BOLTZ_API_URL'),
+      boltzApiUrl,
+      ...(boltzTrust.trust ? { boltzTrust: boltzTrust.trust } : {}),
+      ...(boltzSwapUnavailableReason ? { boltzSwapUnavailableReason } : {}),
       entryPointAddress: envAddress(env, 'VITE_EVM_ENTRY_POINT_ADDRESS'),
       accountFactoryAddress: envAddress(env, 'VITE_EVM_ACCOUNT_FACTORY_ADDRESS'),
       bundlerUrl: envValue(env, 'VITE_EVM_BUNDLER_URL') ?? '',
@@ -405,8 +537,9 @@ function appConfigFromEnv(env: Record<string, string>, relays: string[]): AppCon
       multiEscrowBytecodeHash: envHex(env, 'VITE_EVM_MULTI_ESCROW_BYTECODE_HASH'),
       arbiterAddress: envAddress(env, 'VITE_EVM_ARBITER_ADDRESS'),
       arbiterNostrPubkey: envValue(env, 'VITE_EVM_ARBITER_NOSTR_PUBKEY'),
-      assets: parseJsonArray(envValue(env, 'VITE_EVM_ASSETS'), []),
+      assets,
     },
+    cashu: { enabled: false, mints: [] },
   }
 }
 
@@ -417,6 +550,7 @@ function cashuMintsFromEnv(env: Record<string, string>) {
     denomination?: string
     decimals?: number
     policyHash?: string
+    auctionKeysetPolicies?: Array<{ keysetId: string; activeUntil: number }>
   }>(
     envValue(env, 'MARKETPLACE_CASHU_MINTS') ?? envValue(env, 'VITE_CASHU_MINTS'),
     [],
@@ -428,6 +562,7 @@ function cashuMintsFromEnv(env: Record<string, string>) {
       denomination: mint.denomination ?? 'SAT',
       decimals: mint.decimals ?? 0,
       ...(mint.policyHash ? { policyHash: mint.policyHash } : {}),
+      ...(mint.auctionKeysetPolicies ? { auctionKeysetPolicies: mint.auctionKeysetPolicies } : {}),
     }))
   }
   const mintUrl =
@@ -443,19 +578,29 @@ function cashuMintsFromEnv(env: Record<string, string>) {
   }]
 }
 
-function buildPolicies(config: AppConfig, env: Record<string, string>, requested: string[]): PolicyBuildResult {
+function buildPolicies(
+  config: AppConfig,
+  env: Record<string, string>,
+  requested: string[],
+  stateDir: string,
+): PolicyBuildResult {
   const selected = new Set(requested)
   const evmChains = createEvmChainConfigs(config)
+  if (requested.some(policy => policy.startsWith('evm-')) && config.evm.boltzSwapUnavailableReason) {
+    console.warn(`[marketplace-arbiter] ${config.evm.boltzSwapUnavailableReason}; direct EVM routes remain enabled`)
+  }
   const cashuMints = cashuMintsFromEnv(env)
   const orderPolicies: marketplace.MarketplaceOrderPolicy[] = []
   const bidPolicies: marketplace.MarketplaceBidPolicy[] = []
+  const evmStore = new ArbiterEvmOperationStore(resolve(stateDir, 'evm-operations.json'))
+  const cashuStore = new ArbiterCashuEscrowStore(resolve(stateDir, 'cashu-operations.json'))
 
   for (const policy of requested) {
     if (policy === 'evm-escrow') {
       if (evmChains.length === 0) throw new Error('evm-escrow requested but EVM chain config is disabled')
       orderPolicies.push(createEvmEscrowPolicy({
         chains: evmChains,
-        operationStore: new ArbiterEvmOperationStore(),
+        operationStore: evmStore,
         appId: 'marketplace',
       }) as marketplace.MarketplaceOrderPolicy)
     } else if (policy === 'evm-auction') {
@@ -464,19 +609,19 @@ function buildPolicies(config: AppConfig, env: Record<string, string>, requested
       }
       bidPolicies.push(createEvmAuctionPolicy({
         chains: evmChains,
-        operationStore: new ArbiterEvmOperationStore(),
+        operationStore: evmStore,
         appId: 'marketplace',
       }) as marketplace.MarketplaceBidPolicy)
     } else if (policy === 'cashu-escrow') {
       orderPolicies.push(createCashuEscrowPolicy({
         mints: cashuMints,
-        storage: new ArbiterCashuEscrowStore(),
+        storage: cashuStore,
         appId: 'marketplace',
       }) as marketplace.MarketplaceOrderPolicy)
     } else if (policy === 'cashu-auction') {
       bidPolicies.push(createCashuAuctionPolicy({
         mints: cashuMints,
-        storage: new ArbiterCashuEscrowStore(),
+        storage: cashuStore,
         appId: 'marketplace',
       }) as marketplace.MarketplaceBidPolicy)
     } else {
@@ -650,9 +795,10 @@ async function publishServiceEvents(input: {
         })
         continue
       }
-      await signAndPublish(marketplace.escrowServices.template({
+      await signAndPublish(marketplace.arbitrationServices.template({
         d: `${baseD}:evm-escrow:${chain.chainId}`,
         pubkey: input.pubkey,
+        policy: chain.multiEscrowBytecodeHash,
         type: 'EVM',
         maxDuration: defaultMaxDuration,
         fee: { ppm: 0, base: '0', min: '0', max: '0' },
@@ -676,9 +822,10 @@ async function publishServiceEvents(input: {
         })
         continue
       }
-      await signAndPublish(marketplace.escrowServices.template({
+      await signAndPublish(marketplace.arbitrationServices.template({
         d: `${baseD}:evm-auction:${chain.chainId}`,
         pubkey: input.pubkey,
+        policy: chain.multiEscrowBytecodeHash,
         type: 'EVM',
         maxDuration: defaultMaxDuration,
         fee: { ppm: 0, base: '0', min: '0', max: '0' },
@@ -699,9 +846,10 @@ async function publishServiceEvents(input: {
       for (const descriptor of policy.policies()) {
         const mintUrl = typeof descriptor.data?.mintUrl === 'string' ? descriptor.data.mintUrl : undefined
         const unit = typeof descriptor.data?.unit === 'string' ? descriptor.data.unit : undefined
-        await signAndPublish(marketplace.escrowServices.template({
+        await signAndPublish(marketplace.arbitrationServices.template({
           d: `${baseD}:cashu-escrow:${slug(mintUrl ?? descriptor.id ?? 'mint')}`,
           pubkey: input.pubkey,
+          policy: policyHashFor(descriptor) ?? descriptor.id,
           type: 'CASHU',
           maxDuration: defaultMaxDuration,
           fee: { ppm: 0, base: '0', min: '0', max: '0' },
@@ -728,9 +876,10 @@ async function publishServiceEvents(input: {
       for (const descriptor of policy.policies()) {
         const mintUrl = typeof descriptor.data?.mintUrl === 'string' ? descriptor.data.mintUrl : undefined
         const unit = typeof descriptor.data?.unit === 'string' ? descriptor.data.unit : undefined
-        await signAndPublish(marketplace.escrowServices.template({
+        await signAndPublish(marketplace.arbitrationServices.template({
           d: `${baseD}:cashu-auction:${slug(mintUrl ?? descriptor.id ?? 'mint')}`,
           pubkey: input.pubkey,
+          policy: policyHashFor(descriptor) ?? descriptor.id,
           type: 'CASHU',
           maxDuration: defaultMaxDuration,
           fee: { ppm: 0, base: '0', min: '0', max: '0' },
@@ -775,7 +924,10 @@ async function main(): Promise<void> {
   const env = loadEnv()
   const relays = relaysFrom(env, args.relays)
   const config = appConfigFromEnv(env, relays)
-  const build = buildPolicies(config, env, args.policies)
+  const stateRoot = envValue(env, 'XDG_STATE_HOME') ?? resolve(envValue(env, 'HOME') ?? appDir, '.local', 'state')
+  const stateDir = resolve(envValue(env, 'MARKETPLACE_ARBITER_STATE_DIR') ?? resolve(stateRoot, 'nmdk', 'arbiter', slug(args.name)))
+  const build = buildPolicies(config, env, args.policies, stateDir)
+  const settlementJournal = new ArbiterSettlementJournal(resolve(stateDir, 'settlement-journal.json'))
   const pool = new SimplePool({ enableReconnect: true })
   const createdEvents = new Map<string, Event>()
   let signer: ArbiterSigner | undefined
@@ -845,6 +997,7 @@ async function main(): Promise<void> {
       pubkey,
       orderDrivers: build.orderPolicies,
       auctionDrivers: build.bidPolicies,
+      settlementJournal,
       publish: publishTracked,
     })
     const started = await runtime.start({ unusedWindow: 25 })

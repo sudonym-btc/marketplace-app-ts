@@ -529,6 +529,10 @@ function uniqueCurrencies(listing: marketplaceSdk.MarketplaceListing | undefined
   return [...new Set((listing?.prices ?? []).map(item => item.currency).filter(Boolean))]
 }
 
+function routeRequiresPrivateProof(route: marketplaceSdk.MarketplacePaymentRoute | undefined): boolean {
+  return Boolean(route?.policy.proofSensitivity && route.policy.proofSensitivity !== 'public')
+}
+
 export function ListingDetailPage({
   listing,
   marketplace,
@@ -550,7 +554,7 @@ export function ListingDetailPage({
   const [checkoutFlowStatus, setCheckoutFlowStatus] = useState<PaymentFlowStatus>('idle')
   const [checkoutFlowError, setCheckoutFlowError] = useState<string>()
   const [checkoutPublic, setCheckoutPublic] = useState(DEFAULT_CHECKOUT_PUBLIC)
-  const [checkoutPaymentPrivate, setCheckoutPaymentPrivate] = useState(false)
+  const [checkoutPaymentPrivate, setCheckoutPaymentPrivate] = useState(true)
   const [offerAmount, setOfferAmount] = useState('')
   const [offerTouched, setOfferTouched] = useState(false)
   const [negotiateOpen, setNegotiateOpen] = useState(false)
@@ -594,7 +598,7 @@ export function ListingDetailPage({
   const [bidFlowStatus, setBidFlowStatus] = useState<PaymentFlowStatus>('idle')
   const [bidFlowError, setBidFlowError] = useState<string>()
   const [bidPublic, setBidPublic] = useState(DEFAULT_BID_PUBLIC)
-  const [bidPaymentPrivate, setBidPaymentPrivate] = useState(false)
+  const [bidPaymentPrivate, setBidPaymentPrivate] = useState(true)
   const [bidRouteChoices, setBidRouteChoices] = useState<ArbiterChoice[]>([])
   const [selectedBidServiceKey, setSelectedBidServiceKey] = useState('')
   const [bidRouteLoading, setBidRouteLoading] = useState(false)
@@ -876,6 +880,7 @@ export function ListingDetailPage({
     [selectedArbiter, selectedServiceKey],
   )
   const selectedRoute = selectedService?.route
+  const checkoutProofPrivacyRequired = routeRequiresPrivateProof(selectedRoute)
   const selectedAuctionArbiter = useMemo(
     () => auctionArbiterChoices.find(choice => choice.pubkey === selectedAuctionArbiterPubkey),
     [auctionArbiterChoices, selectedAuctionArbiterPubkey],
@@ -901,6 +906,7 @@ export function ListingDetailPage({
     [selectedBidArbiter, selectedBidServiceKey],
   )
   const selectedBidRoute = selectedBidService?.route
+  const bidProofPrivacyRequired = routeRequiresPrivateProof(selectedBidRoute)
   const bidAuctionChains = useMemo(
     () => bidAuction ? (bidChainsByAuction[bidAuction.auctionAnchor] ?? []) : [],
     [bidAuction, bidChainsByAuction],
@@ -1333,7 +1339,7 @@ export function ListingDetailPage({
     setBidFlowStatus('idle')
     setBidFlowError(undefined)
     setBidPublic(DEFAULT_BID_PUBLIC)
-    setBidPaymentPrivate(false)
+    setBidPaymentPrivate(true)
     setBidRouteChoices([])
     setSelectedBidServiceKey('')
     setBidRouteLoading(true)
@@ -1346,7 +1352,7 @@ export function ListingDetailPage({
     setBidAuctionSnapshot(undefined)
     setBidPreviousChainSnapshot(undefined)
     setBidPublic(DEFAULT_BID_PUBLIC)
-    setBidPaymentPrivate(false)
+    setBidPaymentPrivate(true)
     setBidRouteChoices([])
     setSelectedBidServiceKey('')
     setBidRouteLoading(false)
@@ -1441,7 +1447,7 @@ export function ListingDetailPage({
         auction: bidAuction.event,
         route: bidRoute,
         identityProofPrivacy: bidPublic ? 'public' : 'none',
-        paymentProofPrivacy: bidPaymentPrivate ? 'sealed' : 'public',
+        paymentProofPrivacy: bidProofPrivacyRequired || bidPaymentPrivate ? 'sealed' : 'public',
       })
 
       for await (const state of states) {
@@ -1542,7 +1548,7 @@ export function ListingDetailPage({
     setCheckoutFlowStatus('idle')
     setCheckoutFlowError(undefined)
     setCheckoutPublic(DEFAULT_CHECKOUT_PUBLIC)
-    setCheckoutPaymentPrivate(false)
+    setCheckoutPaymentPrivate(true)
     setCheckoutPaymentOpen(false)
     setArbiterPickerOpen(true)
     await loadArbiterChoices()
@@ -1591,7 +1597,7 @@ export function ListingDetailPage({
       }, {
         route,
         identityProofPrivacy: checkoutPublic ? 'public' : 'none',
-        paymentProofPrivacy: checkoutPaymentPrivate ? 'sealed' : 'public',
+        paymentProofPrivacy: routeRequiresPrivateProof(route) || checkoutPaymentPrivate ? 'sealed' : 'public',
       })
       for await (const paymentState of paymentStates) {
         console.debug('[marketplace-app] checkout payment state', {
@@ -1930,7 +1936,7 @@ export function ListingDetailPage({
               summary={[
                 routeSummary(selectedRoute, selectedService) ?? (arbiterPickerLoading ? 'Loading route' : 'No route selected'),
                 checkoutPublic ? 'Public identity' : '',
-                checkoutPaymentPrivate ? 'Private payment proof' : '',
+                checkoutProofPrivacyRequired || checkoutPaymentPrivate ? 'Private payment proof' : '',
               ].filter(Boolean).join(', ')}
             >
               <div className="grid grid-cols-2 gap-4 max-[860px]:grid-cols-1">
@@ -1996,10 +2002,12 @@ export function ListingDetailPage({
               />
               <PrivacyOption
                 id="checkout-payment-private"
-                checked={checkoutPaymentPrivate}
-                disabled={publishing}
+                checked={checkoutProofPrivacyRequired || checkoutPaymentPrivate}
+                disabled={publishing || checkoutProofPrivacyRequired}
                 label="Keep payment proof private"
-                description="Only the seller, arbiter, and your trade key can decrypt it."
+                description={checkoutProofPrivacyRequired
+                  ? 'Required by this payment driver; public disclosure is blocked.'
+                  : 'Only the seller, arbiter, and your trade key can decrypt it.'}
                 onChange={setCheckoutPaymentPrivate}
               />
             </AdvancedAccordion>
@@ -2360,7 +2368,7 @@ export function ListingDetailPage({
               summary={[
                 routeSummary(selectedBidRoute, selectedBidService) ?? (bidRouteLoading ? 'Loading route' : bidRouteError ? 'Route unavailable' : 'No route selected'),
                 bidPublic ? 'Public identity' : '',
-                bidPaymentPrivate ? 'Private payment proof' : '',
+                bidProofPrivacyRequired || bidPaymentPrivate ? 'Private payment proof' : '',
               ].filter(Boolean).join(', ')}
             >
               <Field label="Bid payment route">
@@ -2399,10 +2407,12 @@ export function ListingDetailPage({
               />
               <PrivacyOption
                 id="bid-payment-private"
-                checked={bidPaymentPrivate}
-                disabled={bidPublishing}
+                checked={bidProofPrivacyRequired || bidPaymentPrivate}
+                disabled={bidPublishing || bidProofPrivacyRequired}
                 label="Keep payment proof private"
-                description="Only the seller, arbiter, and your trade key can decrypt it."
+                description={bidProofPrivacyRequired
+                  ? 'Required by this payment driver; public disclosure is blocked.'
+                  : 'Only the seller, arbiter, and your trade key can decrypt it.'}
                 onChange={setBidPaymentPrivate}
               />
             </AdvancedAccordion>
