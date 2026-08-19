@@ -6,17 +6,28 @@ import { createEvmChainConfigs } from './config'
 
 const erc20Swap = '0x71C95911E9a5D330f4D621842EC243EE1343292e'
 const permit2 = '0xcf27F781841484d5CF7e155b44954D7224caF1dD'
+const token = '0x712516e61c8B383dF4a63CFe83D7701Bce54B03e'
 const runtimeBytecodeHash = `0x${'ab'.repeat(32)}`
 
 function validTrustJson(): string {
   return JSON.stringify({
     erc20Swap: { address: erc20Swap, runtimeBytecodeHash },
-    dexCallTargets: [{
-      address: permit2,
-      runtimeBytecodeHash,
-      functions: [{ selector: '0x87517c45', decoder: 'permit2-approve-v1' }],
-      maxValue: '0',
-    }],
+    dexCallTargets: [
+      {
+        address: token,
+        runtimeBytecodeHash,
+        functions: [
+          { selector: '0x095ea7b3', decoder: 'erc20-approve-v1' },
+          { selector: '0xa9059cbb', decoder: 'erc20-transfer-v1' },
+        ],
+      },
+      {
+        address: permit2,
+        runtimeBytecodeHash,
+        functions: [{ selector: '0x87517c45', decoder: 'permit2-approve-v1' }],
+        maxValue: '0',
+      },
+    ],
   })
 }
 
@@ -49,8 +60,9 @@ describe('Boltz trust configuration', () => {
     const parsed = parseEvmBoltzTrust(validTrustJson())
     expect(parsed.error).toBeUndefined()
     expect(parsed.trust?.erc20Swap.address).toBe(erc20Swap)
-    expect(parsed.trust?.dexCallTargets?.[0]?.maxValue).toBe(0n)
-    expect(parsed.trust?.dexCallTargets?.[0]?.functions[0]?.decoder).toBe('permit2-approve-v1')
+    expect(parsed.trust?.dexCallTargets?.[0]?.functions[1]?.decoder).toBe('erc20-transfer-v1')
+    expect(parsed.trust?.dexCallTargets?.[1]?.maxValue).toBe(0n)
+    expect(parsed.trust?.dexCallTargets?.[1]?.functions[0]?.decoder).toBe('permit2-approve-v1')
   })
 
   test('fails closed for unknown decoder configuration', () => {

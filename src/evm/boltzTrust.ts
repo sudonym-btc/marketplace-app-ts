@@ -13,6 +13,8 @@ const zeroAddress = /^0x0{40}$/i
 const zeroHash = /^0x0{64}$/i
 const trustedCallDecoders = new Set<EvmTrustedCallDecoder>([
   'exact-input-v1',
+  'erc20-approve-v1',
+  'erc20-transfer-v1',
   'permit2-approve-v1',
   'uniswap-universal-router-v3-exact-in-v1',
 ])
