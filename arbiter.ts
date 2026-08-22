@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 
 import {
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -23,6 +25,7 @@ import {
   type CashuEscrowStorage,
 } from '@sudonym-btc/marketplace-cashu'
 import {
+  createMarketplaceEvmClient,
   createEvmAuctionPolicy,
   createEvmEscrowPolicy,
   type EvmMarketplaceChainConfig,
@@ -38,6 +41,7 @@ import { decrypt as nip44Decrypt, encrypt as nip44Encrypt, getConversationKey } 
 import { BunkerSigner, createNostrConnectURI } from 'nostr-tools/nip46'
 import { SimplePool } from 'nostr-tools/pool'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import { createEvmChainConfigs } from './src/evm/config'
 import { parseEvmBoltzTrust } from './src/evm/boltzTrust'
@@ -76,6 +80,7 @@ type PolicyBuildResult = {
   selected: Set<string>
   evmChains: EvmMarketplaceChainConfig[]
   cashuMints: Array<{ mintUrl: string; unit: string; denomination: string; decimals: number; policyHash?: string }>
+  evmSettlementAddress?: Address
 }
 
 const appDir = dirname(fileURLToPath(import.meta.url))
@@ -83,6 +88,7 @@ const nmdkDir = resolve(appDir, '../..')
 const defaultRelay = 'ws://127.0.0.1:18080'
 const defaultName = 'NMDK Marketplace Arbiter'
 const defaultManifestPath = resolve(nmdkDir, 'data/seed/marketplace-seed.json')
+const defaultEvmStackConfigPath = resolve(nmdkDir, 'dependencies/marketplace-evm-stack/data/config/marketplace-evm-stack.json')
 const defaultMaxDuration = 14 * 24 * 60 * 60
 const zeroAddress = '0x0000000000000000000000000000000000000000' as Address
 const devCaBundle = resolve(nmdkDir, 'docker/tls/ca/ca-bundle.crt')
@@ -119,19 +125,36 @@ function decodeState(_key: string, value: unknown): unknown {
   return value
 }
 
-function readStateRecords<T>(path: string): T[] {
+export function ensureArbiterStateDirectory(path: string): void {
+  if (existsSync(path)) {
+    const state = lstatSync(path)
+    if (state.isSymbolicLink() || !state.isDirectory()) {
+      throw new Error(`Arbiter state path must be a real directory: ${path}`)
+    }
+  } else {
+    mkdirSync(path, { recursive: true, mode: 0o700 })
+  }
+  chmodSync(path, 0o700)
+}
+
+export function readStateRecords<T>(path: string): T[] {
   if (!existsSync(path)) return []
+  const state = lstatSync(path)
+  if (state.isSymbolicLink() || !state.isFile()) {
+    throw new Error(`Arbiter state path must be a regular file: ${path}`)
+  }
+  chmodSync(path, 0o600)
   const parsed = JSON.parse(readFileSync(path, 'utf8'), decodeState) as { version?: unknown; records?: unknown }
   if (parsed.version !== 1 || !Array.isArray(parsed.records)) throw new Error(`Invalid arbiter state file: ${path}`)
   return parsed.records as T[]
 }
 
-function writeStateRecords<T>(path: string, records: T[]): void {
+export function writeStateRecords<T>(path: string, records: T[]): void {
   const directory = dirname(path)
-  mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const temporary = `${path}.tmp`
+  ensureArbiterStateDirectory(directory)
+  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
   const payload = JSON.stringify({ version: 1, records }, encodeState)
-  const fd = openSync(temporary, 'w', 0o600)
+  const fd = openSync(temporary, 'wx', 0o600)
   try {
     writeFileSync(fd, payload)
     fsyncSync(fd)
@@ -150,7 +173,7 @@ function writeStateRecords<T>(path: string, records: T[]): void {
   }
 }
 
-class ArbiterEvmOperationStore implements EvmOperationStore {
+export class ArbiterEvmOperationStore implements EvmOperationStore {
   private readonly records = new Map<string, EvmOperationRecord>()
 
   constructor(private readonly path: string) {
@@ -196,7 +219,7 @@ function cashuStatusMatches(
   return Array.isArray(expected) ? expected.includes(actual) : actual === expected
 }
 
-class ArbiterCashuEscrowStore implements CashuEscrowStorage {
+export class ArbiterCashuEscrowStore implements CashuEscrowStorage {
   private readonly records = new Map<string, CashuEscrowOperation>()
 
   constructor(private readonly path: string) {
@@ -240,7 +263,7 @@ class ArbiterCashuEscrowStore implements CashuEscrowStorage {
   }
 }
 
-class ArbiterSettlementJournal implements marketplace.MarketplaceSettlementJournal {
+export class ArbiterSettlementJournal implements marketplace.MarketplaceSettlementJournal {
   private readonly records = new Map<string, marketplace.MarketplaceSettlementJournalRecord>()
 
   constructor(private readonly path: string) {
@@ -261,6 +284,7 @@ class ArbiterSettlementJournal implements marketplace.MarketplaceSettlementJourn
 }
 
 if (
+  import.meta.main &&
   !process.env[caReexecFlag] &&
   !process.env.NODE_EXTRA_CA_CERTS &&
   !process.env.SSL_CERT_FILE &&
@@ -478,6 +502,43 @@ function envHex(env: Record<string, string>, name: string): Hex | undefined {
   return envValue(env, name) as Hex | undefined
 }
 
+type EvmStackAccountConfig = {
+  accounts?: {
+    arbiter?: {
+      address?: unknown
+      privateKey?: unknown
+    }
+  }
+}
+
+function readEvmArbiterPrivateKey(path: string): Hex {
+  let stack: EvmStackAccountConfig
+  try {
+    stack = JSON.parse(readFileSync(path, 'utf8')) as EvmStackAccountConfig
+  } catch (error) {
+    throw new Error(`Could not read EVM arbiter account config at ${path}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const privateKey = stack.accounts?.arbiter?.privateKey
+  if (typeof privateKey !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+    throw new Error(`EVM stack config ${path} does not contain a valid arbiter private key`)
+  }
+  return privateKey as Hex
+}
+
+export function evmSettlementAccountFromEnv(env: Record<string, string>, expectedAddress: Address) {
+  const privateKey = envHex(env, 'MARKETPLACE_EVM_ARBITER_PRIVATE_KEY') ?? readEvmArbiterPrivateKey(
+    envValue(env, 'MARKETPLACE_EVM_STACK_CONFIG') ?? defaultEvmStackConfigPath,
+  )
+  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+    throw new Error('MARKETPLACE_EVM_ARBITER_PRIVATE_KEY must be a 32-byte 0x-prefixed hex value')
+  }
+  const account = privateKeyToAccount(privateKey)
+  if (account.address.toLowerCase() !== expectedAddress.toLowerCase()) {
+    throw new Error('Configured EVM settlement key does not match VITE_EVM_ARBITER_ADDRESS')
+  }
+  return account
+}
+
 function parseJsonArray<T>(raw: string | undefined, fallback: T[]): T[] {
   if (!raw) return fallback
   try {
@@ -578,7 +639,7 @@ function cashuMintsFromEnv(env: Record<string, string>) {
   }]
 }
 
-function buildPolicies(
+export function buildPolicies(
   config: AppConfig,
   env: Record<string, string>,
   requested: string[],
@@ -594,6 +655,19 @@ function buildPolicies(
   const bidPolicies: marketplace.MarketplaceBidPolicy[] = []
   const evmStore = new ArbiterEvmOperationStore(resolve(stateDir, 'evm-operations.json'))
   const cashuStore = new ArbiterCashuEscrowStore(resolve(stateDir, 'cashu-operations.json'))
+  const evmSettlementAccount = selected.has('evm-auction')
+    ? evmSettlementAccountFromEnv(env, config.evm.arbiterAddress)
+    : undefined
+  const evmSettlementExecutor = evmSettlementAccount
+    ? createMarketplaceEvmClient({
+        chains: evmChains,
+        operationStore: evmStore,
+        account: evmSettlementAccount,
+      }).executor
+    : undefined
+  if (evmSettlementAccount && !evmSettlementExecutor) {
+    throw new Error('EVM auction settlement executor could not be configured')
+  }
 
   for (const policy of requested) {
     if (policy === 'evm-escrow') {
@@ -610,6 +684,8 @@ function buildPolicies(
       bidPolicies.push(createEvmAuctionPolicy({
         chains: evmChains,
         operationStore: evmStore,
+        settlementAccount: evmSettlementAccount,
+        settlementExecutor: evmSettlementExecutor,
         appId: 'marketplace',
       }) as marketplace.MarketplaceBidPolicy)
     } else if (policy === 'cashu-escrow') {
@@ -629,7 +705,14 @@ function buildPolicies(
     }
   }
 
-  return { orderPolicies, bidPolicies, selected, evmChains, cashuMints }
+  return {
+    orderPolicies,
+    bidPolicies,
+    selected,
+    evmChains,
+    cashuMints,
+    ...(evmSettlementAccount ? { evmSettlementAddress: evmSettlementAccount.address } : {}),
+  }
 }
 
 function randomHex(bytes: number): string {
@@ -926,6 +1009,7 @@ async function main(): Promise<void> {
   const config = appConfigFromEnv(env, relays)
   const stateRoot = envValue(env, 'XDG_STATE_HOME') ?? resolve(envValue(env, 'HOME') ?? appDir, '.local', 'state')
   const stateDir = resolve(envValue(env, 'MARKETPLACE_ARBITER_STATE_DIR') ?? resolve(stateRoot, 'nmdk', 'arbiter', slug(args.name)))
+  ensureArbiterStateDirectory(stateDir)
   const build = buildPolicies(config, env, args.policies, stateDir)
   const settlementJournal = new ArbiterSettlementJournal(resolve(stateDir, 'settlement-journal.json'))
   const pool = new SimplePool({ enableReconnect: true })
@@ -985,6 +1069,8 @@ async function main(): Promise<void> {
       relays,
       orderPolicies: build.orderPolicies.map(policy => policy.id ?? policy.method),
       bidPolicies: build.bidPolicies.map(policy => policy.id ?? policy.method),
+      stateDir,
+      ...(build.evmSettlementAddress ? { evmSettlementAddress: build.evmSettlementAddress } : {}),
     })
 
     signer = await connectSigner(pool, relays, args, env)
@@ -1059,7 +1145,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(error => {
-  console.error('[arbiter] failed', error)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch(error => {
+    console.error('[arbiter] failed', error)
+    process.exit(1)
+  })
+}

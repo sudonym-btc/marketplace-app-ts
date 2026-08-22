@@ -79,6 +79,23 @@ this JSON from bytecode actually deployed by the local EVM stack. If the value
 is missing or invalid, the app keeps direct EVM routes available, disables all
 Lightning-to-EVM swap fallbacks before contacting Boltz, and reports why.
 
+## Arbiter durability and settlement credentials
+
+`arbiter.ts` writes only recovery journals and idempotency records beneath
+`MARKETPLACE_ARBITER_STATE_DIR`. That directory must be writable, private to one
+arbiter process, and backed by durable storage. The root NMDK Compose file gives
+each local arbiter its own named volume, so `--force-recreate` does not discard
+pending submissions or completed-operation tombstones. The daemon enforces mode
+`0700` on the directory and mode `0600` on each state file.
+
+An arbiter serving `evm-auction` must also control the EVM address configured in
+`VITE_EVM_ARBITER_ADDRESS`. Supply its 32-byte key through the deployment's
+secret mechanism as `MARKETPLACE_EVM_ARBITER_PRIVATE_KEY`. The local development
+stack instead points `MARKETPLACE_EVM_STACK_CONFIG` at its generated, disposable
+Anvil account file. Startup fails before subscribing to orders if the derived
+account does not exactly match the advertised arbiter address or if a durable
+AA settlement executor cannot be constructed.
+
 ## Compile checks
 
 ```sh
