@@ -2,6 +2,7 @@
   "name": "@sudonym-btc/marketplace-app-ts",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Nostr marketplace web app with NIP-46 login, listings, orders, inbox, and EVM checkout driver.",
   "type": "module",
   "scripts": {
