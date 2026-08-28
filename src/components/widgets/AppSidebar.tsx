@@ -114,6 +114,9 @@ function SidebarContent({
               <Link activeProps={activeProps} inactiveProps={inactiveProps} onClick={onNavigate} to="/my-listings">My Listings</Link>
               <NavLinkWithBadge count={navigationCounts.sellerOrders} onNavigate={onNavigate} to="/orders">Orders</NavLinkWithBadge>
             </NavSection>
+            <NavSection title="Escrow">
+              <Link activeProps={activeProps} inactiveProps={inactiveProps} onClick={onNavigate} to="/escrow">Dashboard</Link>
+            </NavSection>
           </>
         ) : null}
       </nav>

@@ -16,6 +16,7 @@ import { Route as MyListingsRouteImport } from './routes/my-listings'
 import { Route as MyBidsRouteImport } from './routes/my-bids'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as InboxRouteImport } from './routes/inbox'
+import { Route as EscrowRouteImport } from './routes/escrow'
 import { Route as EditListingRouteImport } from './routes/edit-listing'
 import { Route as AuctionsRouteImport } from './routes/auctions'
 import { Route as IndexRouteImport } from './routes/index'
@@ -56,6 +57,11 @@ const InboxRoute = InboxRouteImport.update({
   path: '/inbox',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EscrowRoute = EscrowRouteImport.update({
+  id: '/escrow',
+  path: '/escrow',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EditListingRoute = EditListingRouteImport.update({
   id: '/edit-listing',
   path: '/edit-listing',
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auctions': typeof AuctionsRoute
   '/edit-listing': typeof EditListingRoute
+  '/escrow': typeof EscrowRoute
   '/inbox': typeof InboxRoute
   '/login': typeof LoginRoute
   '/my-bids': typeof MyBidsRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auctions': typeof AuctionsRoute
   '/edit-listing': typeof EditListingRoute
+  '/escrow': typeof EscrowRoute
   '/inbox': typeof InboxRoute
   '/login': typeof LoginRoute
   '/my-bids': typeof MyBidsRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/auctions': typeof AuctionsRoute
   '/edit-listing': typeof EditListingRoute
+  '/escrow': typeof EscrowRoute
   '/inbox': typeof InboxRoute
   '/login': typeof LoginRoute
   '/my-bids': typeof MyBidsRoute
@@ -123,6 +132,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auctions'
     | '/edit-listing'
+    | '/escrow'
     | '/inbox'
     | '/login'
     | '/my-bids'
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auctions'
     | '/edit-listing'
+    | '/escrow'
     | '/inbox'
     | '/login'
     | '/my-bids'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auctions'
     | '/edit-listing'
+    | '/escrow'
     | '/inbox'
     | '/login'
     | '/my-bids'
@@ -163,6 +175,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuctionsRoute: typeof AuctionsRoute
   EditListingRoute: typeof EditListingRoute
+  EscrowRoute: typeof EscrowRoute
   InboxRoute: typeof InboxRoute
   LoginRoute: typeof LoginRoute
   MyBidsRoute: typeof MyBidsRoute
@@ -224,6 +237,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InboxRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/escrow': {
+      id: '/escrow'
+      path: '/escrow'
+      fullPath: '/escrow'
+      preLoaderRoute: typeof EscrowRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/edit-listing': {
       id: '/edit-listing'
       path: '/edit-listing'
@@ -259,6 +279,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuctionsRoute: AuctionsRoute,
   EditListingRoute: EditListingRoute,
+  EscrowRoute: EscrowRoute,
   InboxRoute: InboxRoute,
   LoginRoute: LoginRoute,
   MyBidsRoute: MyBidsRoute,

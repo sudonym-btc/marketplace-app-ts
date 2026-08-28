@@ -6,7 +6,7 @@ import { createEvmAuctionPolicy, createEvmEscrowPolicy } from '@sudonym-btc/mark
 
 import { loadAppConfig, type AppConfig } from '../config/appConfig'
 import { LocalCashuEscrowStore } from '../cashu/storage'
-import { createEvmChainConfigs } from '../evm/config'
+import { createEvmChainConfigs, createEvmSettlementAccount } from '../evm/config'
 import { LocalOperationStore } from '../evm/operationStore'
 import { createLnurlPayInvoice } from '../lightning/lnurl'
 import { clearStoredSession, isBunkerSessionTimeout, publisher, restoreStoredSession } from '../nostr/session'
@@ -280,6 +280,7 @@ export function useAppState() {
       const orderDrivers: marketplace.MarketplaceOrderDriver[] = []
       const auctionDrivers: marketplace.MarketplaceAuctionDriver[] = []
       const evmChains = createEvmChainConfigs(config)
+      const evmSettlementAccount = createEvmSettlementAccount(config, nextSession.pubkey)
       if (config.evm.enabled && config.evm.boltzSwapUnavailableReason) {
         console.warn('[marketplace-app] EVM swap routes disabled', {
           reason: config.evm.boltzSwapUnavailableReason,
@@ -312,6 +313,7 @@ export function useAppState() {
             chains: evmChains,
             operationStore: new LocalOperationStore(),
             withdrawals: { createInvoice: createWithdrawalInvoice },
+            ...(evmSettlementAccount ? { settlementAccount: evmSettlementAccount } : {}),
             appId: 'marketplace',
             logger: marketplaceLogger,
           })

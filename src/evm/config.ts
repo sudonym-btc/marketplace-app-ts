@@ -1,5 +1,24 @@
 import type { EvmMarketplaceChainConfig } from '@sudonym-btc/marketplace-evm'
+import { getAddress } from 'viem'
+import type { LocalAccount } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import type { AppConfig } from '../config/appConfig'
+
+export function createEvmSettlementAccount(
+  config: AppConfig,
+  signerPubkey: string,
+): LocalAccount | undefined {
+  const { arbiterAddress, arbiterNostrPubkey, arbiterPrivateKey } = config.evm
+  if (!config.evm.enabled) return undefined
+  if (!arbiterPrivateKey || !arbiterNostrPubkey) return undefined
+  if (arbiterNostrPubkey.toLowerCase() !== signerPubkey.toLowerCase()) return undefined
+
+  const account = privateKeyToAccount(arbiterPrivateKey)
+  if (getAddress(account.address) !== getAddress(arbiterAddress)) {
+    throw new Error('Local demo EVM arbiter key does not match VITE_EVM_ARBITER_ADDRESS')
+  }
+  return account
+}
 
 export function createEvmChainConfigs(config: AppConfig): EvmMarketplaceChainConfig[] {
   if (!config.evm.enabled) return []

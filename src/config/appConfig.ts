@@ -39,6 +39,8 @@ export type EvmAppConfig = {
   multiEscrowBytecodeHash?: `0x${string}`
   arbiterAddress: Address
   arbiterNostrPubkey?: string
+  /** Disposable local-demo key. Never configured in a production build. */
+  arbiterPrivateKey?: `0x${string}`
   assets: AppAssetConfig[]
 }
 
@@ -208,6 +210,21 @@ function parseDemoAccounts(): DemoAccountConfig[] {
   }
 }
 
+function parseLocalDemoArbiterPrivateKey(): `0x${string}` | undefined {
+  const host = browserHost()
+  const isDevelopmentHost = Boolean(host && (isLoopbackHost(host) || developmentDomainForHost(host)))
+  if (!import.meta.env.DEV || !isDevelopmentHost) return undefined
+
+  // This value is intentionally read directly instead of through env(): Vite
+  // can remove the complete development-only branch from production builds.
+  const value = import.meta.env.VITE_EVM_ARBITER_PRIVATE_KEY as string | undefined
+  if (!value) return undefined
+  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error('VITE_EVM_ARBITER_PRIVATE_KEY must be a 32-byte hex key')
+  }
+  return value as `0x${string}`
+}
+
 function parseAssets(): AppAssetConfig[] {
   const raw = env('VITE_EVM_ASSETS')
   if (!raw) return []
@@ -258,6 +275,7 @@ export function loadAppConfig(): AppConfig {
         : undefined
     : undefined
   const cashuMints = parseCashuMints()
+  const arbiterPrivateKey = parseLocalDemoArbiterPrivateKey()
   return {
     relays: parseRelays(),
     nip46Relays: parseRelays('VITE_NIP46_RELAYS'),
@@ -284,6 +302,7 @@ export function loadAppConfig(): AppConfig {
       multiEscrowBytecodeHash: env('VITE_EVM_MULTI_ESCROW_BYTECODE_HASH') as `0x${string}` | undefined,
       arbiterAddress: envAddress('VITE_EVM_ARBITER_ADDRESS'),
       arbiterNostrPubkey: env('VITE_EVM_ARBITER_NOSTR_PUBKEY'),
+      ...(arbiterPrivateKey ? { arbiterPrivateKey } : {}),
       assets: evmAssets,
     },
     cashu: {

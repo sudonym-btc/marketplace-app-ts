@@ -2,12 +2,15 @@ import { describe, expect, test } from 'bun:test'
 
 import type { AppConfig } from '../config/appConfig'
 import { parseEvmBoltzTrust } from './boltzTrust'
-import { createEvmChainConfigs } from './config'
+import { createEvmChainConfigs, createEvmSettlementAccount } from './config'
 
 const erc20Swap = '0x71C95911E9a5D330f4D621842EC243EE1343292e'
 const permit2 = '0xcf27F781841484d5CF7e155b44954D7224caF1dD'
 const token = '0x712516e61c8B383dF4a63CFe83D7701Bce54B03e'
 const runtimeBytecodeHash = `0x${'ab'.repeat(32)}`
+const arbiterPrivateKey = '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6'
+const arbiterAddress = '0x90F79bf6EB2c4f870365E785982E1f101E93b906'
+const arbiterPubkey = 'ab'.repeat(32)
 
 function validTrustJson(): string {
   return JSON.stringify({
@@ -48,7 +51,7 @@ function appConfig(): AppConfig {
       accountFactoryAddress: '0x91E60e0613810449d098b0b5Ec8b51A0FE8c8985',
       bundlerUrl: 'http://127.0.0.1:4337',
       multiEscrowAddress: '0x663F3ad617193148711d28f5334eE4Ed07016602',
-      arbiterAddress: '0x90F79bf6EB2c4f870365E785982E1f101E93b906',
+      arbiterAddress,
       assets: [],
     },
     cashu: { enabled: false, mints: [] },
@@ -86,5 +89,38 @@ describe('Boltz trust configuration', () => {
     const chains = createEvmChainConfigs(config)
     expect(chains[0]?.boltz?.trustByChainId?.[412346]).toEqual(parsed.trust)
     expect(chains[0]?.boltz?.apiUrl).toBe('http://127.0.0.1:19001/v2')
+  })
+})
+
+describe('local demo settlement account', () => {
+  test('is available only to the configured Nostr arbiter', () => {
+    const config = appConfig()
+    config.evm.arbiterNostrPubkey = arbiterPubkey
+    config.evm.arbiterPrivateKey = arbiterPrivateKey
+
+    expect(createEvmSettlementAccount(config, 'cd'.repeat(32))).toBeUndefined()
+    expect(createEvmSettlementAccount(config, arbiterPubkey)?.address).toBe(arbiterAddress)
+  })
+
+  test('is absent without a disposable demo key', () => {
+    const config = appConfig()
+    config.evm.arbiterNostrPubkey = arbiterPubkey
+    expect(createEvmSettlementAccount(config, arbiterPubkey)).toBeUndefined()
+  })
+
+  test('is absent when the EVM driver is disabled', () => {
+    const config = appConfig()
+    config.evm.enabled = false
+    config.evm.arbiterNostrPubkey = arbiterPubkey
+    config.evm.arbiterPrivateKey = arbiterPrivateKey
+    expect(createEvmSettlementAccount(config, arbiterPubkey)).toBeUndefined()
+  })
+
+  test('fails closed when the key does not control the advertised address', () => {
+    const config = appConfig()
+    config.evm.arbiterNostrPubkey = arbiterPubkey
+    config.evm.arbiterPrivateKey = `0x${'11'.repeat(32)}`
+    expect(() => createEvmSettlementAccount(config, arbiterPubkey))
+      .toThrow('does not match VITE_EVM_ARBITER_ADDRESS')
   })
 })

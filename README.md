@@ -8,6 +8,7 @@ Nostr marketplace web app with:
 - Startup payment method publishing.
 - Startup EVM driver discovery/sweep hook.
 - Classified listings, listing detail checkout, inbox, orders, and listing editor.
+- An escrow dashboard for driver-validated orders and auction bids.
 
 The app defaults to NMDK's local relay at `ws://127.0.0.1:18080`. Override
 `VITE_RELAYS` with a comma-separated relay list when needed.
@@ -17,17 +18,20 @@ This repo is designed to run inside the NMDK dependency tree beside:
 - `../nostr-tools`
 - `../marketplace-evm-ts`
 
-## One-command local demo
+## Fresh local demo in two steps
 
-From this folder:
+From any working directory:
 
 ```sh
-npm install
-npm run up
+git clone --recurse-submodules https://github.com/sudonym-btc/nmdk.git && cd nmdk
+npm run demo:quickstart
 ```
 
-`npm run up` starts the full NMDK local stack from the parent repository and then
-starts the Vite client. Open `http://localhost:5178`.
+`demo:quickstart` verifies the supported toolchain, installs the pinned
+workspace, cold-starts the full NMDK stack, seeds deterministic fixtures, and
+starts the Vite client. Open `http://127.0.0.1:5178`. Choose **Buyer** for the
+marketplace walkthrough, or **Arbiter - EVM** and open **Escrow → Dashboard**
+to inspect trades naming that escrow identity.
 
 The stack launcher starts:
 
@@ -37,10 +41,12 @@ The stack launcher starts:
 - Signet remote signer, Blossom upload server, and local HTTPS development proxy
 - deterministic marketplace seed data, Signet keys, and arbiter daemons
 
-The same launch from the NMDK root is:
+When this submodule is already checked out inside NMDK, the shorter developer
+launch remains available:
 
 ```sh
-npm run demo:up
+npm install
+npm run up
 ```
 
 For deterministic one-command launches, the parent stack resets disposable
@@ -57,6 +63,28 @@ npm run up
 
 Docker Desktop or another Docker daemon must be running before launching the
 stack.
+
+## Escrow dashboard API
+
+The dashboard is deliberately a thin view over the signed-in marketplace
+session. It lists and watches only records where that identity is the selected
+escrow, and delegates every action back to the matching driver:
+
+```ts
+const records = await session.escrow.records.list()
+const live = session.escrow.records.watch()
+for await (const state of session.escrow.execute(record, 'release')) {
+  // render driver progress
+}
+live.close()
+```
+
+Actions are fail-closed. A record has no `release` or `refund` action unless its
+payment is committed, validation is accepted, and the ready payment driver
+explicitly advertises and implements that action. Execution refetches and
+revalidates the record, so a stale dashboard cannot authorize settlement.
+Auction bids are currently monitor-only because safe auction settlement needs
+whole-auction context.
 
 ## App-only development
 
@@ -95,6 +123,14 @@ stack instead points `MARKETPLACE_EVM_STACK_CONFIG` at its generated, disposable
 Anvil account file. Startup fails before subscribing to orders if the derived
 account does not exactly match the advertised arbiter address or if a durable
 AA settlement executor cannot be constructed.
+
+The browser dashboard never accepts a production settlement credential. For
+the disposable localhost demo only, the root launcher writes the generated
+Anvil key to the ignored, mode-`0600` `.env.local` file. The app reads that key
+only in Vite development mode on loopback or `*.marketplace.test`, only exposes
+actions to the matching Nostr arbiter, and verifies the derived EVM address.
+Production builds omit this development branch; real deployments must keep
+settlement keys in a server-side signer.
 
 ## Compile checks
 
