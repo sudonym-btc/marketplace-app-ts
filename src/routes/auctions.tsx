@@ -21,7 +21,10 @@ function AuctionsRoute() {
           const resolvedAuction = snapshot.auction ?? auction
           return {
             auction: resolvedAuction,
-            listing: await marketplaceClient.listings.findByAnchor(resolvedAuction.listingAnchor),
+            listing: await marketplaceClient.listings.findByAnchor(
+              resolvedAuction.listingAnchor,
+              { maxWait: 2500 },
+            ),
             snapshot,
           }
         } catch (err) {

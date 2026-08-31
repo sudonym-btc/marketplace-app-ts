@@ -295,7 +295,6 @@ function ackEventItem(ack: marketplace.ParsedPaymentAck, index: number, count: n
     icon: <CheckCircleIcon aria-hidden="true" className="size-4" />,
     message: ack.content.message ?? 'Accepted',
     facts: [
-      { label: 'Author', value: shortPubkey(ack.event.pubkey) },
       { label: 'Trade', value: shortPubkey(ack.tradeId) },
       ...refFacts(ack.refs),
     ],
@@ -312,7 +311,6 @@ function nackEventItem(nack: marketplace.ParsedPaymentNack, index: number, count
     icon: <XCircleIcon aria-hidden="true" className="size-4" />,
     message: nack.content.message ?? 'Rejected',
     facts: [
-      { label: 'Author', value: shortPubkey(nack.event.pubkey) },
       { label: 'Trade', value: shortPubkey(nack.tradeId) },
       ...refFacts(nack.refs),
     ],

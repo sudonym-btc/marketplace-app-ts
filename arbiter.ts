@@ -1128,6 +1128,19 @@ async function main(): Promise<void> {
             payment: event.payment.event.id,
             eventId: event.event.id,
           })
+        } else if (event.type === 'ignored') {
+          console.warn('[arbiter] payment ignored', {
+            group: event.group?.id,
+            payment: event.payment?.event.id,
+            reason: event.reason,
+          })
+        } else if (event.type === 'auction_ignored') {
+          console.warn('[arbiter] auction payment ignored', {
+            auction: event.auction?.auctionAnchor,
+            group: event.group?.tradeId,
+            payment: event.payment?.event.id,
+            reason: event.reason,
+          })
         } else if (event.type === 'error') {
           console.warn('[arbiter] arbitration watcher error', event.error)
         } else if (event.type === 'eose') {

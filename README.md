@@ -142,6 +142,11 @@ npm run build
 
 ## Notes
 
-Local storage is used as a cache/session convenience only. Marketplace seed and
-EVM trade material are recovered from Nostr seed events and deterministic chain
-scans.
+The demo browser persists public Cashu/EVM recovery journals and completed-
+operation tombstones in local storage. Those records are security-relevant:
+deleting them can discard crash-recovery and duplicate-effect protection. This
+single-browser store is suitable only for the disposable demo, not a
+multi-process production escrow; production drivers need private, durable,
+atomic storage. Marketplace seeds, private keys, preimages, and opaque provider
+payloads are not stored there. Seed and EVM trade material are recovered from
+Nostr seed events and deterministic chain scans.

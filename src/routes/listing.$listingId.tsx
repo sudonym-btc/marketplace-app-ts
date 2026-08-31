@@ -10,7 +10,7 @@ function ListingRoute() {
   const { state, publisher, actions } = useMarketplaceApp()
   const marketplaceClient = state.marketplace
   const listing = useRouteFetch(
-    () => marketplaceClient.listings.findById(listingId),
+    () => marketplaceClient.listings.findById(listingId, { maxWait: 2500 }),
     null,
     [listingId, marketplaceClient, state.refreshRevision],
   )
