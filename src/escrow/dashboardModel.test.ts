@@ -133,6 +133,22 @@ describe('escrow dashboard model', () => {
     expect(calls).toEqual([{ record: current, action: 'release' }])
   })
 
+  test('returns at terminal settlement publication without waiting for later driver states', async () => {
+    const current = runtimeRecord('published', ['release'])
+    const execute = (async function* () {
+      yield { type: 'progress', status: 'settling' }
+      yield { type: 'settlement_published', event: { id: 'settlement-event' } }
+      throw new Error('terminal stream was consumed too far')
+    }) as LoadedMarketplaceSession['escrow']['execute']
+
+    await expect(executeEscrowDashboardAction(
+      fakeSession({ execute }),
+      [current],
+      recordView(current),
+      recordView(current).actions[0],
+    )).resolves.toBeUndefined()
+  })
+
   test('maps unavailable runtime records without inventing dashboard actions', () => {
     const record = {
       ...runtimeRecord('monitor-only'),
@@ -149,4 +165,3 @@ describe('escrow dashboard model', () => {
     })
   })
 })
-

@@ -111,7 +111,16 @@ export async function executeEscrowDashboardAction(
   if (!runtimeRecord) throw new Error('Escrow record is stale; refresh and try again')
   const runtimeAction = runtimeRecord.actions.find(candidate => candidate === action.id)
   if (!runtimeAction) throw new Error('Escrow action is no longer available')
-  for await (const _state of session.escrow.execute(runtimeRecord, runtimeAction)) {
+  const states = session.escrow.execute(runtimeRecord, runtimeAction)[Symbol.asyncIterator]()
+  for (;;) {
+    const next = await states.next()
+    if (next.done) return
+    const state = next.value
     // Driver and relay progress is reflected by the live escrow record stream.
+    // Publication is the terminal UI boundary: stop consuming here even when
+    // a driver-backed iterable remains open for reconciliation updates. Use
+    // explicit `next()` calls so returning does not await the iterable's
+    // long-lived `return()` cleanup path.
+    if (state.type === 'settlement_published') return
   }
 }
